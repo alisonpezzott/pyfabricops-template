@@ -1,0 +1,9 @@
+line-length = 79
+target-version = "py310"
+# The items of the workspace, whose notebook cells use the notebook's
+# globals.
+extend-exclude = ["fabric-workspace"]
+
+[lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501", "B023", "B904"]

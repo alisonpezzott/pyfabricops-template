@@ -5,8 +5,8 @@
 # or not: no workspace is connected to Git.
 #
 # Before the first run:
-# - This folder is the root of the repository. GitHub runs the workflows of
-#   .github/workflows at the root only.
+# - A repository made from this template (Use this template on GitHub).
+#   In the template repository itself, the job is skipped.
 # - Two environments (Settings > Environments), "dev" and "prd", each with
 #   the secrets FAB_TENANT_ID, FAB_CLIENT_ID and FAB_CLIENT_SECRET, of a
 #   service principal that is a Contributor of the workspace. The workspace
@@ -42,8 +42,11 @@ concurrency:
 
 jobs:
   deploy:
-    # Any other branch run by hand deploys nowhere.
-    if: github.ref_name == 'develop' || github.ref_name == 'main'
+    # Any other branch run by hand deploys nowhere, and the template
+    # repository itself deploys nothing.
+    if: >
+      github.repository != 'alisonpezzott/pyfabricops-template'
+      && (github.ref_name == 'develop' || github.ref_name == 'main')
     runs-on: ubuntu-latest
     environment: ${{ github.ref_name == 'main' && 'prd' || 'dev' }}
     permissions:

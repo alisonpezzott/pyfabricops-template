@@ -1,10 +1,10 @@
 # Deploy a Fabric workspace with pyfabricops
 
 A template repository: the script and the pipelines that deploy the items of
-a Fabric workspace, with pyfabricops, to one workspace per environment. DEV
-deploys from the `develop` branch and PRD from `main`. Copy it into a new
-repository, fill in the environment files, and put the items in
-`fabric-workspace/`.
+a Fabric workspace, with [pyfabricops](https://github.com/alisonpezzott/pyfabricops),
+to one workspace per environment. DEV deploys from the `develop` branch and
+PRD from `main`. Make a repository from it, fill in the environment files,
+and put the items in `fabric-workspace/`.
 
 The repository can be written in two ways, and the script tells them apart
 by the environment files:
@@ -32,6 +32,8 @@ without one, and the environments may mix them.
 ├── azure-pipelines/reconcile.yml     Azure DevOps: drift report, weekdays
 ├── .github/workflows/deploy.yml      GitHub Actions: deploy when develop or main changes
 ├── .github/workflows/reconcile.yml   GitHub Actions: drift report, weekdays
+├── .github/workflows/check.yml       GitHub Actions: Ruff, mypy and a start of the script
+├── ruff.toml                         the Ruff settings of the script
 └── .env.example                      the credentials, for local runs
 ```
 
@@ -42,8 +44,13 @@ without one, and the environments may mix them.
 
 ## Set up a new repository
 
-1. **Copy this template** into the new repository and push `main` and
-   `develop`.
+1. **Make the repository.**
+   - On GitHub: **Use this template** > **Create a new repository**, then
+     create `develop` from `main`.
+   - On Azure DevOps: **Repos** > **Import repository**, with the clone URL
+     of this repository, then create `develop` from `main`. Importing a
+     private repository asks for a personal access token with read access
+     to it.
 2. **Fill in the environment files.** Replace `workspace-name-or-id-DEV` and
    `workspace-name-or-id-PRD` with the name or ID of each workspace. Keep
    `"gitConnected": true` in `DEV.json`. In `PRD.json`, keep `valueSet` only

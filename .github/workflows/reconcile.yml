@@ -19,6 +19,8 @@ on:
 
 jobs:
   reconcile:
+    # The template repository itself has no workspace to reconcile.
+    if: github.repository != 'alisonpezzott/pyfabricops-template'
     strategy:
       fail-fast: false
       matrix:

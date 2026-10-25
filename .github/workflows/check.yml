@@ -1,0 +1,77 @@
+# Checks the deploy script when develop or main changes, and on each pull
+# request: Ruff, mypy and that it starts with the pyfabricops it pins.
+#
+# In the template repository itself it also checks that no ID of a real
+# workspace got into its files, only the empty GUID and the IDs made up for
+# it. A repository made from the template holds the IDs of its own
+# workspaces, so the check is skipped there.
+
+name: Check
+
+on:
+  push:
+    branches:
+      - develop
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  script:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install pyfabricops and the checkers
+        run: pip install "pyfabricops>=0.9.0,<0.10.0" ruff mypy
+
+      - name: Ruff
+        run: |
+          ruff check scripts
+          ruff format --check scripts
+
+      - name: mypy
+        run: mypy --strict scripts/deploy.py
+
+      - name: The script starts
+        run: python scripts/deploy.py --help
+
+  ids:
+    if: github.repository == 'alisonpezzott/pyfabricops-template'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: No real ID
+        shell: python
+        run: |
+          import re
+          import sys
+          from pathlib import Path
+
+          guid = re.compile(
+              r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"
+          )
+          # The empty GUID, which Fabric writes for the workspace of an
+          # item of the same workspace, and the IDs made up for examples.
+          made_up = re.compile(
+              r"00000000-0000-0000-0000-000000000000"
+              r"|00000000-0000-4000-8000-\d{12}"
+          )
+          found = sorted(
+              f"{path}: {match}"
+              for path in Path(".").rglob("*")
+              if path.is_file() and ".git" not in path.parts
+              for match in guid.findall(
+                  path.read_text(encoding="utf-8", errors="ignore")
+              )
+              if not made_up.fullmatch(match.lower())
+          )
+          print("\n".join(found) or "No real ID.")
+          sys.exit(1 if found else 0)
