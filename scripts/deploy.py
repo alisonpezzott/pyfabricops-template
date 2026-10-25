@@ -119,10 +119,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
-
 # pyfabricops ships no py.typed marker, so mypy cannot read its types.
 import pyfabricops as pf  # type: ignore[import-untyped]
+from dotenv import load_dotenv
 
 ItemKey = tuple[str, str]
 # The parameters of each semantic model, by model and parameter name.
