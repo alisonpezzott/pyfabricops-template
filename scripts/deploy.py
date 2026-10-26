@@ -353,7 +353,9 @@ class Expressions:
     def blocks(self) -> list[tuple[str, int, int]]:
         """Each expression: its name, start and end in the text."""
         starts = list(EXPRESSION.finditer(self.text))
-        ends = [match.start() for match in starts[1:]] + [len(self.text)]
+        if not starts:
+            return []
+        ends =[match.start() for match in starts[1:]] + [len(self.text)]
         return [
             (match.group(1).strip("'").replace("''", "'"), match.start(), end)
             for match, end in zip(starts, ends, strict=True)
