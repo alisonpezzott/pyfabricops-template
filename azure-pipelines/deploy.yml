@@ -10,8 +10,8 @@
 # any other branch deploys nowhere, and fails.
 #
 # Before the first run:
-# - A variable group "fabric" (Pipelines > Library) with FAB_TENANT_ID,
-#   FAB_CLIENT_ID and FAB_CLIENT_SECRET, this one as a secret, of a service
+# - A variable group "fabric" (Pipelines > Library) with FAB-TENANT-ID,
+#   FAB-CLIENT-ID and FAB-CLIENT-SECRET, this one as a secret, of a service
 #   principal that is a Contributor of both workspaces.
 # - Two environments (Pipelines > Environments), "DEV" and "PRD", each with
 #   an Exclusive Lock check, so that one deployment runs at a time; "PRD"
@@ -105,6 +105,6 @@ stages:
                       displayName: Deploy
                       env:
                         # Secret variables reach a script only when mapped.
-                        FAB_TENANT_ID: $(FAB_TENANT_ID)
-                        FAB_CLIENT_ID: $(FAB_CLIENT_ID)
-                        FAB_CLIENT_SECRET: $(FAB_CLIENT_SECRET)
+                        FAB_TENANT_ID: $(FAB-TENANT-ID)
+                        FAB_CLIENT_ID: $(FAB-CLIENT-ID)
+                        FAB_CLIENT_SECRET: $(FAB-CLIENT-SECRET)

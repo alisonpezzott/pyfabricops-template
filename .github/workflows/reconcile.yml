@@ -56,6 +56,6 @@ jobs:
           --environment ${{ matrix.name }}
           --state-branch pyfabricops/state
         env:
-          FAB_TENANT_ID: ${{ secrets.FAB_TENANT_ID }}
-          FAB_CLIENT_ID: ${{ secrets.FAB_CLIENT_ID }}
-          FAB_CLIENT_SECRET: ${{ secrets.FAB_CLIENT_SECRET }}
+          FAB_TENANT_ID: ${{ secrets.FAB-TENANT-ID }}
+          FAB_CLIENT_ID: ${{ secrets.FAB-CLIENT-ID }}
+          FAB_CLIENT_SECRET: ${{ secrets.FAB-CLIENT-SECRET }}
