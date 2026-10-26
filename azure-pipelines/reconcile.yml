@@ -81,6 +81,6 @@ jobs:
             displayName: Reconcile
             env:
               # Secret variables reach a script only when mapped.
-              FAB_TENANT_ID: $(FAB_TENANT_ID)
-              FAB_CLIENT_ID: $(FAB_CLIENT_ID)
-              FAB_CLIENT_SECRET: $(FAB_CLIENT_SECRET)
+              FAB_TENANT_ID: $(FAB-TENANT-ID)
+              FAB_CLIENT_ID: $(FAB-CLIENT-ID)
+              FAB_CLIENT_SECRET: $(FAB-CLIENT-SECRET)
