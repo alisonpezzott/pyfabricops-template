@@ -21,7 +21,9 @@ writes the repository tells what a run does:
   the workspace to deploy to, as Fabric lists both at every run. Every item
   type of pyfabricops goes. A shortcut to an item of the same workspace gets
   the logical ID of that item in the target, since Fabric looks it up among
-  the items of the workspace.
+  the items of the workspace. The query URI of an eventhouse and the SQL
+  endpoint of DEV become those of the target too, and a data agent the
+  run sends is published, as its users get only what is published.
 
 The item types go one at a time, in the dependency order of pyfabricops and
 pipelines last, so that an item refers by ID only to items already in the
@@ -355,7 +357,7 @@ class Expressions:
         starts = list(EXPRESSION.finditer(self.text))
         if not starts:
             return []
-        ends =[match.start() for match in starts[1:]] + [len(self.text)]
+        ends = [match.start() for match in starts[1:]] + [len(self.text)]
         return [
             (match.group(1).strip("'").replace("''", "'"), match.start(), end)
             for match, end in zip(starts, ends, strict=True)
@@ -614,11 +616,47 @@ def drop_local_files(
 
 
 def subset(staging: Path, items: Sequence[SourceItem], folder: Path) -> Path:
-    """A copy of some staged items, in their folders, for a run of their own."""
+    """
+    A copy of some staged items, in their folders, for a run of their own.
+
+    An item nested in another, as a KQL database in the .children folder of
+    its eventhouse, takes the .platform of that item along, which names the
+    item it belongs to.
+    """
     root = folder / staging.name
     for item in items:
         shutil.copytree(item.folder, root / item.folder.relative_to(staging))
+        parent = item.folder.parent
+        if parent.name == ".children":
+            platform = parent.parent / ".platform"
+            copy = root / platform.relative_to(staging)
+            if platform.is_file() and not copy.exists():
+                shutil.copyfile(platform, copy)
     return root
+
+
+def publish_data_agents(workspace_id: str, results: Sequence[Any]) -> bool:
+    """
+    Publish each data agent the run sent; True when all were published.
+
+    A data agent keeps a draft and a published configuration, and its
+    users get only the published one, which deploying its definition does
+    not set for sure.
+    """
+    ok = True
+    for result in results:
+        if result.item_type != "DataAgent" or result.action not in SENT:
+            continue
+        try:
+            pf.publish_data_agent(
+                workspace_id,
+                result.item_id or result.display_name,
+                "Deployed by pyfabricops",
+            )
+        except (pf.RequestError, pf.ResourceNotFoundError) as error:
+            print(f"{result.display_name}.DataAgent: {error}")
+            ok = False
+    return ok
 
 
 def report(result: Any, title: str) -> bool:
@@ -1148,8 +1186,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             if not report(redeployed, "SemanticModel, parameters"):
                 return 1
             results += redeployed.results
+        published = publish_data_agents(target, results)
         ready = prepare_models(target, items, results, refreshed=args.refresh)
-        return 0 if ready else 1
+        return 0 if ready and published else 1
 
 
 if __name__ == "__main__":
