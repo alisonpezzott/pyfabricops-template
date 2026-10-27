@@ -336,7 +336,9 @@ class Expressions:
     A parameter is an expression whose value has the meta record
     ``IsParameterQuery = true``, inline or inside a ``let``, as Power BI
     Desktop writes either. A parameter whose value is not text, such as a
-    date or a number, cannot be told by a JSON string, so it stops the run.
+    date or a number, cannot be told by a JSON string: it keeps the value
+    of the repository, and the file of an environment that gives it one
+    stops the run.
 
     Args:
         model (SourceItem): The staged semantic model.
@@ -364,20 +366,25 @@ class Expressions:
         ]
 
     def values(self) -> dict[str, str]:
-        """The value of each parameter, by name."""
+        """The value of each text parameter, by name."""
         found: dict[str, str] = {}
         for name, start, end in self.blocks():
             block = self.text[start:end]
             if not PARAMETER.search(block):
                 continue
             value = TEXT_VALUE.search(block)
-            if value is None:
-                raise SystemExit(
-                    f"{label(self.model.key)}: parameter {name} is not text, "
-                    "which --parameters cannot set."
-                )
-            found[name] = value.group(1).replace('""', '"')
+            if value is not None:
+                found[name] = value.group(1).replace('""', '"')
         return found
+
+    def not_text(self) -> set[str]:
+        """The parameters whose value is not text, such as a date."""
+        return {
+            name
+            for name, start, end in self.blocks()
+            if PARAMETER.search(self.text[start:end])
+            and TEXT_VALUE.search(self.text[start:end]) is None
+        }
 
     def set(self, values: Mapping[str, str]) -> None:
         """Give the parameters these values, and write the file."""
@@ -479,7 +486,9 @@ def read_parameters(
 
     A parameter it does not give keeps the value of the repository, the one
     DEV opens with. A model or a parameter the repository does not have
-    stops the run, as a misspelled name would leave that value unnoticed.
+    stops the run, as a misspelled name would leave that value unnoticed,
+    and so does a value for a parameter that is not text, such as a date,
+    which a JSON string cannot set.
     """
     file = environment.file
     given = environment.parameters
@@ -490,11 +499,18 @@ def read_parameters(
     ]
     parameters: Parameters = {}
     for model in models(items):
-        defined = set(Expressions(model).values())
+        expressions = Expressions(model)
+        defined = set(expressions.values())
+        not_text = expressions.not_text()
         values = {str(k): str(v) for k, v in given.get(model.name, {}).items()}
         problems += [
             f"{file.name}: {label(model.key)} has no parameter {name}."
-            for name in sorted(set(values) - defined)
+            for name in sorted(set(values) - defined - not_text)
+        ]
+        problems += [
+            f"{file.name}: {label(model.key)} parameter {name} is not text, "
+            "which the file cannot set."
+            for name in sorted(set(values) & not_text)
         ]
         parameters[model.name] = values
     if problems:
@@ -553,7 +569,7 @@ def apply_parameters(
                 f"{label(model.key)}: its parameters did not take the values "
                 "given."
             )
-        kept = sorted(set(values) - set(given))
+        kept = sorted((set(values) | expressions.not_text()) - set(given))
         if kept:
             print(
                 f"{label(model.key)} keeps the values of the repository for "
