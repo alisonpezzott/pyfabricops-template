@@ -73,7 +73,7 @@ items. Fabric Git integration ignores it, and so does the script.
 
 | DEV connected to Git | No workspace connected |
 | :--- | :--- |
-| Every item type pyfabricops deploys, such as lakehouses, notebooks, pipelines, Direct Lake models, variable libraries, semantic models and reports | Variable libraries, import or DirectQuery semantic models, and reports |
+| Every item type pyfabricops deploys, such as lakehouses, warehouses, eventhouses and their KQL databases, notebooks, pipelines, Direct Lake models, variable libraries, semantic models, reports, eventstreams, ontologies and data agents | Variable libraries, import or DirectQuery semantic models, and reports |
 
 The script stops before it deploys anything when the repository has:
 
@@ -135,7 +135,7 @@ of its variable libraries and the parameters of its semantic models:
 | `workspace` | The workspace to deploy to, by name or ID. `--workspace` overrides it for a local run. |
 | `gitConnected` | `true` for the environment Fabric Git integration writes. No run deploys to it, and the script reads its items to translate their IDs. |
 | `valueSet` | The value set made active in every variable library after the deployment. Every library must have it, with this exact name, and the run stops when the repository has no variable library. Without it, the libraries keep their default values, which are those of DEV. |
-| `parameters` | The text parameters of each semantic model, by model and parameter name. A parameter left out keeps the value of the repository, the one of DEV, and the run says which. A model or parameter the repository does not have stops the run, so a misspelled name never goes unnoticed. |
+| `parameters` | The text parameters of each semantic model, by model and parameter name. A parameter left out keeps the value of the repository, the one of DEV, and the run says which; so does a parameter that is not text, such as a date, which the file cannot set. A model or parameter the repository does not have stops the run, so a misspelled name never goes unnoticed. |
 
 Whether the workspace is on a capacity is not in the file: the script reads
 it from Fabric.
@@ -161,7 +161,9 @@ For the environment of the branch, `scripts/deploy.py`:
    lists both workspaces at every run. This covers, for example, the
    default lakehouse of a notebook, the OneLake source of a Direct Lake
    model and the items a pipeline runs. A shortcut to an item of the same
-   workspace gets the logical ID of that item in the target.
+   workspace gets the logical ID of that item in the target. The query URI
+   of each eventhouse and the SQL endpoint of DEV become those of the
+   target as well.
 6. Deploys one item type at a time, in the dependency order of pyfabricops,
    with pipelines last. An item then refers by ID only to items already in
    the target, and a report bound to its model by path goes bound to the ID
@@ -181,20 +183,24 @@ For the environment of the branch, `scripts/deploy.py`:
    The refresh is a plain one, without the options of an enhanced refresh,
    which a workspace without a capacity refuses. A Direct Lake model is left
    alone: it reads its tables as they are loaded.
+10. Publishes each data agent it deployed: its users get only what is
+    published.
 
 The run fails when any step fails, and the next run retries a model that was
 deployed but neither bound nor refreshed.
 
 ## Before you start
 
-- **pyfabricops 0.9.0 or later.**
+- **pyfabricops 0.10.0 or later.**
 - **A service principal**, allowed to call the Fabric and Power BI APIs by
   the tenant settings, Contributor of each workspace it deploys to, and able
   to read the items of DEV when DEV is connected to Git.
 - **A shareable cloud connection per environment** to each SQL server and
   database an import model reads, with the service principal as a user of
   it. The script finds it by server and database, so no connection name or
-  ID is configured.
+  ID is configured. The service principal must also be a user of the
+  connection of each OneLake shortcut to an external source, or the
+  lakehouse that holds it fails to deploy.
 - **A place for the deployment state:**
   - `pyfabricops/state`, a branch of this repository that the first
     deployment creates (`--state-branch`), as the pipelines do. The pipeline
@@ -225,6 +231,7 @@ python scripts/deploy.py --environment PRD --plan
 | `--source` | Reads the items from another folder than `fabric-workspace`. |
 | `--no-refresh` | Binds the models but does not refresh them. |
 | `--allow-deletions` | Deletes from the workspace the items deleted in Git. Without it, an item deleted in Git fails the deployment until it is deleted by hand. |
+| `--log-level` | How much pyfabricops logs as the run goes: `INFO` by default, `DEBUG` for each API call, payloads included. |
 
 ## Deploy from CI
 
