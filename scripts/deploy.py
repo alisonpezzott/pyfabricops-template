@@ -110,6 +110,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import re
 import shutil
@@ -1030,6 +1031,13 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         action="store_false",
         help="Bind the semantic models, but do not refresh them.",
     )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=("DEBUG", "INFO", "WARNING", "ERROR"),
+        help="How much pyfabricops logs as it goes. Defaults to INFO; "
+        "DEBUG shows each API call.",
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
         "--plan",
@@ -1061,6 +1069,14 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     """Deploy, plan, reconcile or restore; 0 when all went well."""
     args = parse_args(argv)
+    # A pipeline gives no terminal, and Python would hold the output back
+    # until the end; each line goes out as it is written instead.
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(line_buffering=True)
+    # No symbols: a console that is not UTF-8 cannot write them.
+    pf.setup_logging(
+        level=args.log_level, include_module=False, include_symbols=False
+    )
     load_dotenv()
     pf.set_auth_provider("env")
     environment = read_environment(args.environment)
@@ -1071,6 +1087,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 0
     connected = git_environment()
+    print(f"Reading the workspace of {environment.name}...")
     target = require_workspace(args.workspace or environment.workspace)
     source: str | None = None
     if connected is not None:
@@ -1086,6 +1103,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             pf.copy_to_staging(str(args.source), staging_dir=staging_dir)
         )
         items = read_items(staging)
+        print(f"{len(items)} item(s) in the repository.")
         drop_local_files(args.source, staging, items)
         problems = unsupported(items, translated=source is not None)
         problems += without_capacity(target, items)
@@ -1097,6 +1115,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         parameters = apply_parameters(items, given)
         ids = None
         if source is not None:
+            print(
+                f"Translating the IDs of {connected.name if connected else ''}"
+                f" into those of {environment.name}..."
+            )
             ids = pf.WorkspaceIdMap.load(source, target, staging)
             ids.translate(staging)
         # The types a run manages: those that hold no ID of a workspace,
@@ -1170,6 +1192,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         present |= {item_type for item_type, _ in list_workspace(target)}
         results: list[Any] = []
         for item_type in [t for t in managed if t in present]:
+            print(f"-- {item_type}...")
             done = run_type(
                 item_type,
                 operation,
