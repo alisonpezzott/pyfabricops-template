@@ -5,8 +5,9 @@
 # deploys to, and the deployment runs in the GitHub environment of that
 # name, then binds and refreshes the semantic models (see deploy.py). A push
 # to a branch of no environment runs the first job only, and deploys
-# nothing. The environment connected to Git, dev by default, is written by
-# Fabric Git integration, so its run only says so.
+# nothing. The environment connected to Git, dev by default, is updated
+# from Git instead, as Update in Source control does; the service principal
+# needs Git credentials of its own on it (see the README).
 #
 # Before the first run:
 # - A repository made from this template (Use this template on GitHub).

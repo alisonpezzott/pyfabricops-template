@@ -8,7 +8,8 @@
 # schedule names its branches when the pipeline is compiled, so the list
 # below repeats the branches of the environments; a branch of no
 # environment fails. The environment connected to Git, dev by default, is
-# kept in sync by Fabric Git integration, so its run only says so.
+# left out: changes not committed yet are normal there, and a run of its
+# branch updates it from Git (see deploy.py).
 #
 # Before using it:
 # - It uses the "fabric" variable group of deploy.yml, and needs the same
@@ -25,7 +26,6 @@ schedules:
     displayName: Weekdays at 06:00 UTC
     branches:
       include:
-        - develop
         - main
     # Run even when the branch did not change: drift happens in the
     # workspace.

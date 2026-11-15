@@ -70,7 +70,17 @@ libraries and the parameters of each semantic model there (see
         Database: "<db>"
 
 The file of the environment connected to Git gives ``gitConnected: true``,
-its workspace and its branch only; one environment at most is. So what
+its workspace and its branch only; one environment at most is. No item is
+deployed to it through the API: a run of its branch updates its workspace
+from Git, as Update in Source control does, so that what reaches the
+branch from outside the workspace, such as a merged pull request, gets
+there. A workspace on the commit of the branch is left alone, and one with
+changes not committed yet is not updated, as that would discard them: the
+run fails and names them. --plan tells what an update would do, and
+--reconcile fails when the workspace is not on the commit of the branch.
+The service principal needs Git credentials of its own on the workspace.
+
+So what
 tells the environments apart is in Git, reviewed like the items, and the
 pipelines only pass their branch: --branch main deploys to the environment
 whose branch is main. --workspace overrides the workspace of the file, for
@@ -958,6 +968,100 @@ def mirroring_in_place(
     return ok
 
 
+def git_changes(status: Mapping[str, Any]) -> tuple[list[str], list[str]]:
+    """
+    The items a Git status says changed: those changed in the workspace
+    and not committed yet, and those changed in Git and not in the
+    workspace yet.
+    """
+    local: list[str] = []
+    remote: list[str] = []
+    for change in status.get("changes") or []:
+        metadata = change.get("itemMetadata") or {}
+        identifier = metadata.get("itemIdentifier") or {}
+        name = (
+            f"{metadata.get('displayName') or identifier.get('logicalId')}."
+            f"{metadata.get('itemType')}"
+        )
+        if change.get("workspaceChange"):
+            local.append(f"{name} ({change['workspaceChange']})")
+        if change.get("remoteChange"):
+            remote.append(f"{name} ({change['remoteChange']})")
+    return local, remote
+
+
+def update_from_git(
+    workspace_id: str, environment: str, *, apply: bool, strict: bool
+) -> int:
+    """
+    Bring the workspace connected to Git to the commit of its branch.
+
+    Nothing is sent when it is on that commit already, as when the commit
+    came from the workspace itself. A workspace with changes not committed
+    yet is not updated, since the update would discard them. Without
+    ``apply``, it only tells what an update would do.
+
+    Returns:
+        int: 0 when the workspace is, or was brought, on the commit of its
+            branch, and without ``strict`` whatever it found; 1 otherwise.
+    """
+    result = pf.api_request(
+        f"/workspaces/{workspace_id}/git/status",
+        support_lro=True,
+        return_result=True,
+    )
+    if not result.success:
+        print(
+            f"{environment}: could not read its Git status: {result.error}. "
+            "The service principal needs Git credentials of its own on the "
+            "workspace (see the README)."
+        )
+        return 1
+    status = result.data or {}
+    remote = status.get("remoteCommitHash")
+    head = status.get("workspaceHead")
+    local, incoming = git_changes(status)
+    print(
+        f"{environment} is connected to Git: its workspace is on commit "
+        f"{str(head or 'none')[:12]}, its branch on {str(remote)[:12]}."
+    )
+    if local:
+        print(
+            f"{environment} has changes not committed to Git, which an "
+            "update would discard; commit or undo them in Source control:"
+        )
+        print("\n".join(f"  {name}" for name in local))
+        return 1 if strict else 0
+    if remote and remote == head:
+        print(f"{environment} is up to date with its branch.")
+        return 0
+    print(f"An update from Git brings {len(incoming)} item(s):")
+    print("\n".join(f"  {name}" for name in incoming))
+    if not apply:
+        return 1 if strict else 0
+    updated = pf.api_request(
+        f"/workspaces/{workspace_id}/git/updateFromGit",
+        method="post",
+        payload={
+            "remoteCommitHash": remote,
+            "workspaceHead": head,
+            # Nothing changed in the workspace, so nothing of it is lost.
+            "conflictResolution": {
+                "conflictResolutionType": "Workspace",
+                "conflictResolutionPolicy": "PreferRemote",
+            },
+            "options": {"allowOverrideItems": True},
+        },
+        support_lro=True,
+        return_result=True,
+    )
+    if not updated.success:
+        print(f"{environment}: the update from Git failed: {updated.error}")
+        return 1
+    print(f"{environment} is updated to commit {str(remote)[:12]}.")
+    return 0
+
+
 def cloud_connections() -> dict[str, dict[str, Any]]:
     """
     The shareable cloud SQL connections the service principal may use, by
@@ -1236,11 +1340,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         environment = read_environment(args.environment)
     if environment.git_connected:
-        print(
-            f"{environment.name} is connected to Git: it writes the "
-            "repository, and no run deploys to it."
+        workspace = require_workspace(args.workspace or environment.workspace)
+        return update_from_git(
+            workspace,
+            environment.name,
+            apply=not (args.plan or args.reconcile),
+            strict=not args.plan,
         )
-        return 0
     connected = git_environment()
     print(f"Reading the workspace of {environment.name}...")
     target = require_workspace(args.workspace or environment.workspace)

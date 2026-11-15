@@ -62,10 +62,13 @@ without one, and the environments may mix them.
    `develop`, with `fabric-workspace` as the Git folder.
 4. **Commit the items of dev** from **Source control** in the workspace.
    Fabric writes one folder per item into `fabric-workspace/`.
-5. **Prepare the credentials and connections** listed in
+5. **Give the service principal Git credentials on dev**, so that a run
+   of `develop` can update it from Git (see
+   [The environment connected to Git](#the-environment-connected-to-git)).
+6. **Prepare the credentials and connections** listed in
    [Before you start](#before-you-start).
-6. **Create the pipelines** of [Deploy from CI](#deploy-from-ci).
-7. **Check the first deployment** before running it:
+7. **Create the pipelines** of [Deploy from CI](#deploy-from-ci).
+8. **Check the first deployment** before running it:
    `python scripts/deploy.py --environment prod --plan`.
 
 `fabric-workspace/README.md` only keeps the folder in Git while it has no
@@ -110,8 +113,8 @@ The script stops before it deploys anything when the repository has:
 1. Work in the dev workspace, or in Power BI Desktop against dev.
 2. Commit from **Source control** in the dev workspace to `develop`, or
    from a feature branch through a pull request to `develop`. The pipeline
-   runs on `develop` too, but only reports that dev is connected to Git and
-   exits.
+   then updates dev from Git, so that what reached `develop` from outside
+   the workspace, such as a merged pull request, gets there too.
 3. Open a pull request from `develop` to `main`. Once it is merged, the
    pipeline deploys to prod.
 
@@ -161,7 +164,7 @@ connections:
 | :--- | :--- |
 | `workspace` | The workspace to deploy to, by name or ID. `--workspace` overrides it for a local run. |
 | `branch` | The branch that deploys to it, by name or as a glob such as `release/*`. No branch may deploy to two environments. Without it, the environment is deployed only with `--environment`. |
-| `gitConnected` | `true` for the environment Fabric Git integration writes. No run deploys to it, and the script reads its items to translate their IDs. |
+| `gitConnected` | `true` for the environment Fabric Git integration writes. No item is deployed to it through the API: a run of its branch updates it from Git, and the runs of the other environments read its items to translate their IDs. |
 | `valueSet` | The value set made active in every variable library after the deployment. Every library must have it, with this exact name, and the run stops when the repository has no variable library. Without it, the libraries keep their default values, which are those of dev. |
 | `parameters` | The text parameters of each semantic model, by model and parameter name. Quote every value: YAML reads `5432` as a number and `yes` as true, and the run stops on a value that is not text. A parameter left out keeps the value of the repository, the one of dev, and the run says which; so does a parameter that is not text, such as a date, which the file cannot set. A model or parameter the repository does not have stops the run, so a misspelled name never goes unnoticed. |
 | `connections` | The connection of this environment in place of each connection of dev, both by name or ID: every ID of the one of dev in the items, such as the source of a mirrored database or the connection of a copy activity, becomes the ID of the other. A mirrored database also gets the database its new connection names. The service principal must be a user of both, or the run stops. |
@@ -177,11 +180,60 @@ Azure DevOps, add `test` to the `environments` parameter of
 `azure-pipelines/deploy.yml`, which must know its environments before it
 reads any file, and its branch to the schedule of `reconcile.yml`.
 
+## The environment connected to Git
+
+Fabric Git integration does not bring into the workspace what reaches its
+branch from elsewhere, such as a pull request merged into `develop` or a
+push from a laptop, until someone selects **Update** in **Source control**.
+A run of `develop` does that instead, through the Git API of Fabric, and
+deploys no item through the item API:
+
+- a workspace already on the commit of `develop` is left alone, as after a
+  commit made from the workspace itself, which also triggers the pipeline;
+- a workspace with changes not committed yet is not updated, as the update
+  would discard them: the run fails and names them, to be committed or
+  undone in **Source control**;
+- otherwise it is updated to the commit of `develop`, and the run waits.
+
+`--plan` tells what an update would bring; `--reconcile` fails when the
+workspace is not on the commit of its branch, or has changes not committed.
+
+The service principal calls the Git API as itself, so it needs Git
+credentials of its own on the workspace, once:
+
+1. Create a source control connection to the repository in **Manage
+   connections and gateways**: for GitHub, of type GitHub with a
+   fine-grained token that can read and write the contents of the
+   repository; for Azure DevOps, of type Azure DevOps source control.
+   Make the service principal a user of it.
+2. As the service principal, with the `.env` of [Run it](#run-it), point
+   its Git credentials on the dev workspace at that connection:
+
+   ```python
+   import pyfabricops as pf
+   from dotenv import load_dotenv
+
+   load_dotenv()
+   pf.set_auth_provider("env")
+   pf.update_my_git_connection(
+       "<dev workspace>",
+       request_body_type="UpdateGitCredentialsToConfiguredConnectionRequest",
+       connection_id="<connection id>",
+   )
+   ```
+
+Until then, a run of `develop` fails with the error of the Git status and a
+pointer here. The connection types that hold Git credentials for a service
+principal change with Fabric: check the Fabric documentation on Git
+integration with service principals before the first setup.
+
 ## What a deployment does
 
 For the environment of the branch, `scripts/deploy.py`:
 
-1. Exits without doing anything when the environment is connected to Git.
+1. When the environment is connected to Git, updates it from Git and
+   stops there (see
+   [The environment connected to Git](#the-environment-connected-to-git)).
 2. Copies `fabric-workspace/` to a staging folder, without what Git ignores
    (the data cache and local settings of `.pbi`) and without
    `diagramLayout.json`, which the service does not keep. The repository is
@@ -298,9 +350,9 @@ python scripts/deploy.py --environment prod --plan
 The pipelines run the same script, and name no environment of their own:
 a first job runs `scripts/environments.py --branch <branch>`, which prints
 the environment whose `branch` matches, and the deployment runs in the
-environment of that name. By default, `develop` runs dev, which exits at
-once because it is connected to Git; `main` deploys to prod; any other
-branch deploys to nothing, and its run succeeds.
+environment of that name. By default, `develop` updates dev from Git,
+as it is connected to Git; `main` deploys to prod; any other branch
+deploys to nothing, and its run succeeds.
 
 | | Azure DevOps | GitHub Actions |
 | :--- | :--- | :--- |

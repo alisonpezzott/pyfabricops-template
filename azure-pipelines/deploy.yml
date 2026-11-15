@@ -5,7 +5,8 @@
 # runs; the others are skipped, and so is every deployment stage on a branch
 # of no environment. The deployment then binds and refreshes the semantic
 # models (see deploy.py). The environment connected to Git, dev by default,
-# is written by Fabric Git integration, so its run only says so.
+# is updated from Git instead, as Update in Source control does; the service
+# principal needs Git credentials of its own on it (see the README).
 #
 # Azure DevOps needs the environment of a deployment job when the pipeline
 # is compiled, before any file is read, so the environments parameter below
