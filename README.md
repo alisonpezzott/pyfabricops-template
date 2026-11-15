@@ -77,9 +77,19 @@ items. Fabric Git integration ignores it, and so does the script.
 | :--- | :--- |
 | Every item type pyfabricops deploys, such as lakehouses, warehouses, eventhouses and their KQL databases, notebooks, pipelines, Direct Lake models, variable libraries, semantic models, reports, eventstreams, ontologies and data agents | Variable libraries, import or DirectQuery semantic models, and reports |
 
+An item of a type pyfabricops does not deploy, such as a **mirrored
+database**, is not deployed: make it by hand in each workspace, with the
+same name. Its definition holds what differs in each environment, such as
+the connection to its source, and it has to be started there. The run sends
+nothing of it, but what refers to it goes pointed at the one of the target:
+a shortcut of a lakehouse to the mirrored database of dev, for example,
+becomes a shortcut to the one of prod. `--reconcile` does not count it as
+unmanaged, and no run deletes it.
+
 The script stops before it deploys anything when the repository has:
 
-- an item of a type pyfabricops does not deploy;
+- an item of a type pyfabricops does not deploy that the target workspace
+  lacks;
 - without an environment connected to Git, any item but a variable library,
   a semantic model or a report, or a Direct Lake model: their IDs would
   still point to dev;

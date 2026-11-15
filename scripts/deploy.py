@@ -32,8 +32,15 @@ Within a type, the items the others refer to are created first, such as a
 lakehouse a shortcut points to. A run stops before it sends an item that
 would still refer to dev. A type with nothing to send is skipped.
 
-Some items stop the run before anything is deployed: an item of a type
-pyfabricops does not deploy; without dev connected to Git, any item but a
+An item of a type pyfabricops does not deploy, such as a mirrored
+database, whose source connection differs in each environment, is made in
+each workspace by hand, with the same name: the run sends nothing of it,
+and the IDs of the one in dev, such as the target of a shortcut, become
+those of the one in the target. The run stops before anything is deployed
+when the target lacks it.
+
+Some items stop the run before anything is deployed: without dev connected
+to Git, any item but a
 variable library, a semantic model or a report, and a Direct Lake model,
 whose source is a Fabric item by ID; for a Pro workspace, which holds
 semantic models and reports only, any other item; and a model saved as
@@ -254,22 +261,38 @@ def direct_lake(model: SourceItem) -> bool:
     )
 
 
-def unsupported(items: Sequence[SourceItem], *, translated: bool) -> list[str]:
+def by_hand(items: Sequence[SourceItem]) -> list[SourceItem]:
+    """The items of a type the script does not deploy, made by hand."""
+    return [item for item in items if item.item_type not in ITEM_TYPES]
+
+
+def unsupported(
+    items: Sequence[SourceItem],
+    *,
+    translated: bool,
+    target: Mapping[ItemKey, Any],
+    environment: str,
+) -> list[str]:
     """
     What among the staged items the script cannot deploy as it should.
 
-    An item of a type it does not deploy, and a model saved as model.bim,
-    whose parameters would keep the values of dev. Unless the IDs of dev are
-    translated, also any item but a variable library, a semantic model or a
-    report, and a Direct Lake model, which would still refer to dev.
+    An item of a type it does not deploy that the target lacks, as the
+    items referring to it would point nowhere, and a model saved as
+    model.bim, whose parameters would keep the values of dev. Unless the
+    IDs of dev are translated, also any item but a variable library, a
+    semantic model or a report, and a Direct Lake model, which would still
+    refer to dev. target is the listing of the target workspace.
     """
-    problems: list[str] = []
+    problems = [
+        f"{label(item.key)}: deploy.py deploys no {item.item_type}; make it "
+        f"in {environment} by hand, with the same name."
+        for item in by_hand(items)
+        if item.key not in target
+    ]
     for item in items:
         if item.item_type not in ITEM_TYPES:
-            problems.append(
-                f"{label(item.key)}: deploy.py deploys no {item.item_type}."
-            )
-        elif not translated and item.item_type not in WITHOUT_GIT:
+            continue
+        if not translated and item.item_type not in WITHOUT_GIT:
             problems.append(
                 f"{label(item.key)}: deploy.py deploys a {item.item_type} "
                 "only with an environment connected to Git, whose IDs it "
@@ -1047,10 +1070,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         items = read_items(staging)
         print(f"{len(items)} item(s) in the repository.")
         drop_local_files(args.source, staging, items)
-        problems = unsupported(items, translated=source is not None)
+        problems = unsupported(
+            items,
+            translated=source is not None,
+            target=list_workspace(target),
+            environment=environment.name,
+        )
         problems += without_capacity(target, items)
         if problems:
             raise SystemExit("\n".join(problems))
+        for item in by_hand(items):
+            print(
+                f"{label(item.key)}: not deployed; the one made by hand in "
+                f"{environment.name} is used."
+            )
         given = read_parameters(environment, items)
         value_set = read_value_set(environment, items)
         # Those of the file, and of the repository for the others.
@@ -1072,8 +1105,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         reconciliation = pf.reconcile_items(
             target, str(staging), str(staging), item_types=managed
         )
+        # pyfabricops reads the items made by hand as unmanaged, though
+        # the repository has them: no line, and no difference, for them.
+        made = {f"UNMANAGED {i.name}.{i.item_type}:" for i in by_hand(items)}
+        keys = {item.key for item in items}
+        unmanaged = [
+            u
+            for u in reconciliation.unmanaged
+            if (u.item_type, u.display_name) not in keys
+        ]
         print("== Reconciliation")
-        print(reconciliation.describe())
+        print(
+            "\n".join(
+                line
+                for line in reconciliation.describe().splitlines()
+                if not line.startswith(tuple(made))
+            )
+        )
         deleted, kept = orphans(reconciliation, managed, environment)
         for key in kept:
             print(f"{label(key)}: an orphan this script never deletes.")
@@ -1082,7 +1130,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             in_place = value_set_in_place(
                 target, items, value_set, change=False
             )
-            return 0 if reconciliation.ok and in_place else 1
+            ok = not reconciliation.plan.actions and not unmanaged
+            return 0 if ok and in_place else 1
 
         for item in items:
             found = (
