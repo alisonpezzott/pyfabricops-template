@@ -1,15 +1,18 @@
-# Reports drift on weekday mornings: compares develop with DEV and main with
-# PRD, the parameters of the semantic models included, and fails when
-# anything differs, so that someone looks. It never changes a workspace. A
-# report published to DEV from Power BI Desktop shows here as drift.
+# Reports drift on weekday mornings: compares each scheduled branch with the
+# environment it deploys to, the parameters of the semantic models
+# included, and fails when anything differs, so that someone looks. It
+# never changes a workspace.
 #
-# The schedule runs once per branch, and the branch picks the environment
-# when the pipeline is compiled, as in azure-pipelines.yml: each run
-# reconciles its own environment only. A run of any other branch fails.
+# The schedule runs once per branch, and each run asks environments/ which
+# environment its branch deploys to: the branch key of each file. A
+# schedule names its branches when the pipeline is compiled, so the list
+# below repeats the branches of the environments; a branch of no
+# environment fails. The environment connected to Git, dev by default, is
+# kept in sync by Fabric Git integration, so its run only says so.
 #
 # Before using it:
-# - It uses the "fabric" variable group of azure-pipelines.yml, and needs
-#   the same Pipeline permission on it.
+# - It uses the "fabric" variable group of deploy.yml, and needs the same
+#   Pipeline permission on it.
 # - A difference may be drift in the workspace or a change of the branch
 #   still to deploy; to bring the workspace back instead of failing, run the
 #   deploy pipeline, which sends what differs and deletes nothing unless
@@ -33,48 +36,27 @@ pool:
 
 variables:
   - group: fabric
-  # The environment of the branch: environments/<ENVIRONMENT>.json gives
-  # its workspace and parameters.
-  - ${{ if eq(variables['Build.SourceBranch'], 'refs/heads/main') }}:
-      - name: ENVIRONMENT
-        value: PRD
-  - ${{ elseif eq(variables['Build.SourceBranch'], 'refs/heads/develop') }}:
-      - name: ENVIRONMENT
-        value: DEV
-  - ${{ else }}:
-      - name: ENVIRONMENT
-        value: none
 
 jobs:
-  - ${{ if eq(variables.ENVIRONMENT, 'none') }}:
-      - job: Fail
-        displayName: No environment for this branch
-        steps:
-          - checkout: none
-          - script: |
-              echo "##vso[task.logissue type=error]Only develop and main are reconciled: develop with DEV, main with PRD."
-              exit 1
-            displayName: Fail
-  - ${{ else }}:
-      - job: Reconcile
-        displayName: Reconcile ${{ variables.ENVIRONMENT }}
-        steps:
-          - checkout: self
+  - job: Reconcile
+    displayName: Reconcile $(Build.SourceBranchName)
+    steps:
+      - checkout: self
 
-          - task: UsePythonVersion@0
-            inputs:
-              versionSpec: "3.13"
+      - task: UsePythonVersion@0
+        inputs:
+          versionSpec: "3.13"
 
-          - script: pip install "pyfabricops>=0.11.0,<0.12.0"
-            displayName: Install pyfabricops
+      - script: pip install "pyfabricops>=0.11.0,<0.12.0" "pyyaml>=6,<7"
+        displayName: Install pyfabricops
 
-          - script: >
-              python scripts/deploy.py
-              --reconcile
-              --environment $(ENVIRONMENT)
-            displayName: Reconcile
-            env:
-              # Secret variables reach a script only when mapped.
-              FAB_TENANT_ID: $(FAB-TENANT-ID)
-              FAB_CLIENT_ID: $(FAB-CLIENT-ID)
-              FAB_CLIENT_SECRET: $(FAB-CLIENT-SECRET)
+      - script: >
+          python scripts/deploy.py
+          --reconcile
+          --branch "$(Build.SourceBranch)"
+        displayName: Reconcile
+        env:
+          # Secret variables reach a script only when mapped.
+          FAB_TENANT_ID: $(FAB-TENANT-ID)
+          FAB_CLIENT_ID: $(FAB-CLIENT-ID)
+          FAB_CLIENT_SECRET: $(FAB-CLIENT-SECRET)

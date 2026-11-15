@@ -1,0 +1,7 @@
+# The environment Fabric Git integration writes: its workspace is connected
+# to the develop branch, on the fabric-workspace folder. No run deploys to
+# it; deploy.py reads its items to translate their IDs into those of the
+# other environments.
+workspace: workspace-name-or-id-dev
+branch: develop
+gitConnected: true

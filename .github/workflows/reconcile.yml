@@ -1,12 +1,15 @@
-# Reports drift on weekday mornings: compares main with PRD and develop with
-# DEV, the parameters of the semantic models included, and fails when
-# anything differs, so that someone looks. It never changes a workspace. A
-# report published to DEV from Power BI Desktop shows here as drift.
+# Reports drift on weekday mornings: compares each environment with its
+# branch, the parameters of the semantic models included, and fails when
+# anything differs, so that someone looks. It never changes a workspace.
 #
-# It uses the "dev" and "prd" environments of deploy.yml. A difference may
-# be drift in the workspace or a change of the branch still to deploy; to
-# bring the workspace back instead of failing, run the Deploy workspace
-# workflow, which sends what differs and deletes nothing unless allowed.
+# The environments come from environments/: every one with a branch, but
+# the one connected to Git, which Fabric Git integration keeps in sync, and
+# one whose branch is a glob such as release/*, which names no branch to
+# compare with. Each runs in the GitHub environment of its name, as in
+# deploy.yml. A difference may be drift in the workspace or a change of the
+# branch still to deploy; to bring the workspace back instead of failing,
+# run the Deploy workspace workflow, which sends what differs and deletes
+# nothing unless allowed.
 
 name: Reconcile workspace
 
@@ -16,41 +19,57 @@ on:
   workflow_dispatch:
 
 jobs:
-  reconcile:
+  environments:
     # The template repository itself has no workspace to reconcile.
     if: github.repository != 'alisonpezzott/pyfabricops-template'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      list: ${{ steps.list.outputs.list }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install PyYAML
+        run: pip install "pyyaml>=6,<7"
+
+      - name: Environments to reconcile
+        id: list
+        run: echo "list=$(python scripts/environments.py --list)" >> "$GITHUB_OUTPUT"
+
+  reconcile:
+    needs: environments
+    if: needs.environments.outputs.list != '[]'
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - environment: dev
-            name: DEV
-            branch: develop
-          - environment: prd
-            name: PRD
-            branch: main
+        environment: ${{ fromJSON(needs.environments.outputs.list) }}
     runs-on: ubuntu-latest
-    environment: ${{ matrix.environment }}
+    environment: ${{ matrix.environment.name }}
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v5
         with:
           # The branch the workspace is deployed from.
-          ref: ${{ matrix.branch }}
+          ref: ${{ matrix.environment.branch }}
 
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
       - name: Install pyfabricops
-        run: pip install "pyfabricops>=0.11.0,<0.12.0"
+        run: pip install "pyfabricops>=0.11.0,<0.12.0" "pyyaml>=6,<7"
 
       - name: Reconcile
         run: >
           python scripts/deploy.py
           --reconcile
-          --environment ${{ matrix.name }}
+          --environment ${{ matrix.environment.name }}
         env:
           FAB_TENANT_ID: ${{ secrets.FAB_TENANT_ID }}
           FAB_CLIENT_ID: ${{ secrets.FAB_CLIENT_ID }}

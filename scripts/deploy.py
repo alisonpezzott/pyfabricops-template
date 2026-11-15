@@ -3,26 +3,26 @@ Deploy the items of a Git repository to a workspace, on a Fabric capacity or
 not.
 
 The items are in ``fabric-workspace``, and each environment is a workspace:
-a push to develop deploys to DEV, and one to main to PRD, from Azure DevOps
+a push to develop deploys to dev, and one to main to prod, from Azure DevOps
 (``azure-pipelines.yml``) or GitHub Actions (``.github/workflows``). Who
 writes the repository tells what a run does:
 
 - Power BI Desktop saves a Power BI Project, which holds no ID of a
-  workspace. The repository is then the source of every environment, DEV
+  workspace. The repository is then the source of every environment, dev
   included, each on a capacity or a Pro workspace, without one, and the
-  environments may mix them, such as DEV on Pro and PRD on a capacity.
+  environments may mix them, such as dev on Pro and prod on a capacity.
   Variable libraries, semantic models and reports go.
-- Fabric Git integration writes the items of DEV, connected to
-  ``fabric-workspace``. They hold the IDs of DEV, such as the default
+- Fabric Git integration writes the items of dev, connected to
+  ``fabric-workspace``. They hold the IDs of dev, such as the default
   lakehouse of a notebook, the OneLake path of a Direct Lake model or the
   items of the same workspace in a pipeline: sent as they are, the items of
-  PRD would read and write DEV. So no run deploys to DEV, and in a staging
-  copy each ID of DEV becomes the ID of the same item, by type and name, in
+  prod would read and write dev. So no run deploys to dev, and in a staging
+  copy each ID of dev becomes the ID of the same item, by type and name, in
   the workspace to deploy to, as Fabric lists both at every run. Every item
   type of pyfabricops goes. A shortcut to an item of the same workspace gets
   the logical ID of that item in the target, since Fabric looks it up among
   the items of the workspace. The query URI of an eventhouse and the SQL
-  endpoint of DEV become those of the target too, and a data agent the
+  endpoint of dev become those of the target too, and a data agent the
   run sends is published, as its users get only what is published.
 
 The item types go one at a time, in the dependency order of pyfabricops and
@@ -30,33 +30,35 @@ pipelines last, so that an item refers by ID only to items already in the
 target, and a report bound to a model by path is sent bound to its ID there.
 Within a type, the items the others refer to are created first, such as a
 lakehouse a shortcut points to. A run stops before it sends an item that
-would still refer to DEV. A type with nothing to send is skipped.
+would still refer to dev. A type with nothing to send is skipped.
 
 Some items stop the run before anything is deployed: an item of a type
-pyfabricops does not deploy; without DEV connected to Git, any item but a
+pyfabricops does not deploy; without dev connected to Git, any item but a
 variable library, a semantic model or a report, and a Direct Lake model,
 whose source is a Fabric item by ID; for a Pro workspace, which holds
 semantic models and reports only, any other item; and a model saved as
 model.bim, whose parameters the script does not read.
 
-Each environment is a JSON file of ``environments``, named after it
-(--environment PRD reads ``environments/PRD.json``), which gives its
-workspace, the value set of its variable libraries and the parameters of
-each semantic model there::
+Each environment is a YAML file of ``environments``, named after it
+(--environment prod reads ``environments/prod.yml``), which gives its
+workspace, the branch that deploys to it, the value set of its variable
+libraries and the parameters of each semantic model there (see
+``environments.py``)::
 
-    {
-      "workspace": "<workspace>",
-      "valueSet": "<value set>",
-      "parameters": {
-        "Main": {"Server": "<server>.database.windows.net", "Database": "<db>"}
-      }
-    }
+    workspace: <workspace>
+    branch: main
+    valueSet: <value set>
+    parameters:
+      Main:
+        Server: "<server>.database.windows.net"
+        Database: "<db>"
 
-The file of the environment connected to Git gives ``"gitConnected": true``
-and its workspace only; one environment at most is. So what tells the
-environments apart is in Git, reviewed like the items, and the pipelines
-only pick the environment of their branch. --workspace overrides the
-workspace of the file, for a local run.
+The file of the environment connected to Git gives ``gitConnected: true``,
+its workspace and its branch only; one environment at most is. So what
+tells the environments apart is in Git, reviewed like the items, and the
+pipelines only pass their branch: --branch main deploys to the environment
+whose branch is main. --workspace overrides the workspace of the file, for
+a local run.
 
 A variable library is sent as it is: its value sets hold what differs
 between environments, for the items that read it. The value set of the
@@ -68,12 +70,12 @@ keeps the default values: a library starts on them, and the script leaves
 its active value set alone, as the Fabric API documents no way back to
 them.
 
-The repository keeps the parameter values DEV opens with. In the staging
+The repository keeps the parameter values dev opens with. In the staging
 copy, which leaves out what Git ignores, such as the data cache of Power BI
 Desktop, and the diagram layout of each model, which the service does not
 keep, the text parameters of each semantic model get the values the file of
 the environment gives. A parameter it does not give keeps the value of the
-repository, such as the database of DEV, and the run says which; a model or
+repository, such as the database of dev, and the run says which; a model or
 a parameter the repository does not have stops the run, as a misspelled
 name would leave that value unnoticed. The repository is never changed.
 
@@ -133,6 +135,13 @@ from typing import Any
 import pyfabricops as pf  # type: ignore[import-untyped]
 from dotenv import load_dotenv
 
+from environments import (
+    Environment,
+    for_branch,
+    git_environment,
+    read_environment,
+)
+
 ItemKey = tuple[str, str]
 # The parameters of each semantic model, by model and parameter name.
 Parameters = dict[str, dict[str, str]]
@@ -141,16 +150,14 @@ Operation = Callable[..., Any]
 
 # The root of the repository, one folder above this script.
 ROOT = Path(__file__).resolve().parents[1]
-# The items of the repository: a Power BI Project, or the Git folder of DEV.
+# The items of the repository: a Power BI Project, or the Git folder of dev.
 SOURCE = ROOT / "fabric-workspace"
-# The JSON file of each environment: its workspace, value set and parameters.
-ENVIRONMENTS = ROOT / "environments"
 # What the script deploys, in the dependency order of pyfabricops. A pipeline
 # refers to what it runs by ID, so pipelines go last.
 ITEM_TYPES = [t for t in pf.DEPLOY_ORDER if t != "DataPipeline"] + [
     "DataPipeline"
 ]
-# What goes without DEV connected to Git: as Power BI Desktop saves them, or
+# What goes without dev connected to Git: as Power BI Desktop saves them, or
 # as the values of a variable library, they hold no ID of a workspace.
 WITHOUT_GIT = ("VariableLibrary", "SemanticModel", "Report")
 # What a workspace holds without a capacity, as a Pro workspace.
@@ -252,9 +259,9 @@ def unsupported(items: Sequence[SourceItem], *, translated: bool) -> list[str]:
     What among the staged items the script cannot deploy as it should.
 
     An item of a type it does not deploy, and a model saved as model.bim,
-    whose parameters would keep the values of DEV. Unless the IDs of DEV are
+    whose parameters would keep the values of dev. Unless the IDs of dev are
     translated, also any item but a variable library, a semantic model or a
-    report, and a Direct Lake model, which would still refer to DEV.
+    report, and a Direct Lake model, which would still refer to dev.
     """
     problems: list[str] = []
     for item in items:
@@ -346,7 +353,7 @@ class Expressions:
     A parameter is an expression whose value has the meta record
     ``IsParameterQuery = true``, inline or inside a ``let``, as Power BI
     Desktop writes either. A parameter whose value is not text, such as a
-    date or a number, cannot be told by a JSON string: it keeps the value
+    date or a number, cannot be told by a text value: it keeps the value
     of the repository, and the file of an environment that gives it one
     stops the run.
 
@@ -413,103 +420,6 @@ class Expressions:
         self.path.write_bytes(self.text.encode("utf-8"))
 
 
-@dataclass(frozen=True)
-class Environment:
-    """An environment, as its file in ``environments`` describes it."""
-
-    name: str
-    file: Path
-    workspace: str
-    # Whether its workspace is connected to Git, whose IDs the items hold.
-    git_connected: bool
-    # The value set made active in each variable library, if any.
-    value_set: str | None
-    # The parameter values of each semantic model, as the file gives them.
-    parameters: Mapping[str, Any]
-    # The names of the orphans --allow-deletions leaves in the workspace.
-    keep: tuple[re.Pattern[str], ...] = ()
-
-    def keeps(self, name: str) -> bool:
-        """Whether an orphan of this name stays in the workspace."""
-        return any(pattern.fullmatch(name) for pattern in self.keep)
-
-
-def read_environment(name: str) -> Environment:
-    """The environment of a name; exits when its file is missing or wrong."""
-    file = ENVIRONMENTS / f"{name}.json"
-    if not file.is_file():
-        known = ", ".join(sorted(p.stem for p in ENVIRONMENTS.glob("*.json")))
-        raise SystemExit(
-            f"No environment {name}: {file} is missing. Known: {known}."
-        )
-    content = json.loads(file.read_text(encoding="utf-8-sig"))
-    workspace = content.get("workspace")
-    git_connected = content.get("gitConnected", False)
-    value_set = content.get("valueSet")
-    parameters = content.get("parameters", {})
-    keep = content.get("keep", [])
-    keys = {"workspace", "gitConnected", "valueSet", "parameters", "keep"}
-    problems = [
-        f"{file.name}: unknown key {key}."
-        for key in sorted(set(content) - keys)
-    ]
-    if not isinstance(workspace, str) or not workspace:
-        problems.append(f"{file.name}: no workspace.")
-    if not isinstance(git_connected, bool):
-        problems.append(f"{file.name}: gitConnected is not true or false.")
-    elif git_connected:
-        problems += [
-            f"{file.name}: {key}, but it is connected to Git, and no run "
-            "deploys to it."
-            for key in ("valueSet", "parameters", "keep")
-            if key in content
-        ]
-    if value_set is not None and (
-        not isinstance(value_set, str) or not value_set
-    ):
-        problems.append(f"{file.name}: valueSet is not a name.")
-    if not isinstance(parameters, dict):
-        problems.append(f"{file.name}: parameters is not an object.")
-    patterns: list[re.Pattern[str]] = []
-    if not isinstance(keep, list):
-        problems.append(f"{file.name}: keep is not a list of names.")
-    else:
-        for entry in keep:
-            try:
-                patterns.append(re.compile(str(entry)))
-            except re.error as error:
-                problems.append(f"{file.name}: keep {entry!r}: {error}.")
-    if problems:
-        raise SystemExit("\n".join(problems))
-    return Environment(
-        name,
-        file,
-        str(workspace),
-        git_connected,
-        value_set,
-        parameters,
-        tuple(patterns),
-    )
-
-
-def git_environment() -> Environment | None:
-    """The environment connected to Git, whose IDs the items hold, if any."""
-    connected = [
-        environment
-        for environment in (
-            read_environment(path.stem)
-            for path in sorted(ENVIRONMENTS.glob("*.json"))
-        )
-        if environment.git_connected
-    ]
-    if len(connected) > 1:
-        names = ", ".join(environment.name for environment in connected)
-        raise SystemExit(
-            f"One environment at most is connected to Git, not {names}."
-        )
-    return connected[0] if connected else None
-
-
 def read_parameters(
     environment: Environment, items: Sequence[SourceItem]
 ) -> Parameters:
@@ -517,10 +427,10 @@ def read_parameters(
     The parameters the file of the environment gives each semantic model.
 
     A parameter it does not give keeps the value of the repository, the one
-    DEV opens with. A model or a parameter the repository does not have
+    dev opens with. A model or a parameter the repository does not have
     stops the run, as a misspelled name would leave that value unnoticed,
     and so does a value for a parameter that is not text, such as a date,
-    which a JSON string cannot set.
+    which the file cannot set.
     """
     file = environment.file
     given = environment.parameters
@@ -763,9 +673,9 @@ def run_type(
     Send the items of a type: what was done to each, or None when an item
     failed.
 
-    With the IDs of DEV to translate, the items the others refer to by ID
+    With the IDs of dev to translate, the items the others refer to by ID
     are created first, in runs of their own, before the run of the whole
-    type. ids is the pf.WorkspaceIdMap from DEV to the target, and sources
+    type. ids is the pf.WorkspaceIdMap from dev to the target, and sources
     the items of the repository.
     """
     run = {**arguments, "item_types": [item_type]}
@@ -1033,12 +943,17 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         description="Deploy the items of a Git repository to a workspace, on "
         "a Fabric capacity or not."
     )
-    parser.add_argument(
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument(
         "--environment",
-        required=True,
-        help="The environment to deploy to, such as PRD: the file of the "
+        help="The environment to deploy to, such as prod: the file of the "
         "environments folder of that name gives its workspace, value set, "
         "parameters and the orphans it keeps.",
+    )
+    target.add_argument(
+        "--branch",
+        help="Deploy to the environment this branch deploys to, by the "
+        "branch key of its file, such as main or refs/heads/main.",
     )
     parser.add_argument(
         "--workspace",
@@ -1100,7 +1015,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     load_dotenv()
     pf.set_auth_provider("env")
-    environment = read_environment(args.environment)
+    if args.branch:
+        matched = for_branch(args.branch)
+        if matched is None:
+            raise SystemExit(f"No environment has branch {args.branch}.")
+        environment = matched
+    else:
+        environment = read_environment(args.environment)
     if environment.git_connected:
         print(
             f"{environment.name} is connected to Git: it writes the "
@@ -1143,7 +1064,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ids = pf.WorkspaceIdMap.load(source, target, staging)
             ids.translate(staging)
         # The types a run manages: those that hold no ID of a workspace,
-        # unless the IDs of DEV are translated.
+        # unless the IDs of dev are translated.
         managed = [
             t for t in ITEM_TYPES if ids is not None or t in WITHOUT_GIT
         ]

@@ -1,5 +1,6 @@
-# Checks the deploy script when develop or main changes, and on each pull
-# request: Ruff, mypy and that it starts with the pyfabricops it pins.
+# Checks the scripts when develop or main changes, and on each pull
+# request: Ruff, mypy, that the deploy script starts with the pyfabricops it
+# pins, and that the files of environments/ are valid and fit together.
 #
 # In the template repository itself it also checks that no ID of a real
 # workspace got into its files, only the empty GUID and the IDs made up for
@@ -29,7 +30,9 @@ jobs:
           python-version: "3.13"
 
       - name: Install pyfabricops and the checkers
-        run: pip install "pyfabricops>=0.11.0,<0.12.0" ruff mypy
+        run: >
+          pip install "pyfabricops>=0.11.0,<0.12.0" "pyyaml>=6,<7"
+          types-PyYAML ruff mypy
 
       - name: Ruff
         run: |
@@ -37,10 +40,13 @@ jobs:
           ruff format --check scripts
 
       - name: mypy
-        run: mypy --strict scripts/deploy.py
+        run: mypy --strict scripts/deploy.py scripts/environments.py
 
       - name: The script starts
         run: python scripts/deploy.py --help
+
+      - name: The environments are valid
+        run: python scripts/environments.py --list
 
   ids:
     if: github.repository == 'alisonpezzott/pyfabricops-template'

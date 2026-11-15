@@ -1,24 +1,26 @@
-# Deploys fabric-workspace/ to DEV when develop changes and to PRD when main
-# changes, to the workspace and with the parameters of environments/DEV.json
-# or PRD.json, then binds and refreshes the semantic models (see deploy.py).
-# The repository is the source of both workspaces, each on a Fabric capacity
-# or not: no workspace is connected to Git.
+# Deploys fabric-workspace/ when a branch of an environment changes: the
+# branch key of each file of environments/ says which branch deploys to it,
+# such as main to prod. A first stage asks scripts/environments.py which
+# environment the branch deploys to, and only the stage of that environment
+# runs; the others are skipped, and so is every deployment stage on a branch
+# of no environment. The deployment then binds and refreshes the semantic
+# models (see deploy.py). The environment connected to Git, dev by default,
+# is written by Fabric Git integration, so its run only says so.
 #
-# The branch picks the environment when the pipeline is compiled, so a run
-# holds the stage of its own environment only: a run of develop needs no
-# authorization for PRD, and nothing can be edited at queue time. A run of
-# any other branch deploys nowhere, and fails.
+# Azure DevOps needs the environment of a deployment job when the pipeline
+# is compiled, before any file is read, so the environments parameter below
+# lists the environments of this repository: the files of environments/,
+# by the same names. To add one, add its file and its name there.
 #
 # Before the first run:
 # - A variable group "fabric" (Pipelines > Library) with FAB-TENANT-ID,
 #   FAB-CLIENT-ID and FAB-CLIENT-SECRET, this one as a secret, of a service
-#   principal that is a Contributor of both workspaces.
-# - Two environments (Pipelines > Environments), "DEV" and "PRD", each with
-#   an Exclusive Lock check, so that one deployment runs at a time; "PRD"
-#   with an approval too.
-# - This pipeline allowed to use the variable group and both environments
-#   (Pipeline permissions of each), or a Permit on its first run of each
-#   branch.
+#   principal that is a Contributor of every workspace.
+# - One environment (Pipelines > Environments) per name of the parameter,
+#   such as "dev" and "prod", each with an Exclusive Lock check, so that one
+#   deployment runs at a time; "prod" with an approval too.
+# - This pipeline allowed to use the variable group and the environments
+#   (Pipeline permissions of each), or a Permit on its first run.
 # - A shareable cloud connection to the server and database of each
 #   environment, of which the service principal is a user: each semantic
 #   model is bound to it.
@@ -31,16 +33,25 @@
 # longer has, add --allow-deletions to the Deploy step (see deploy.py for
 # what it never deletes).
 
+parameters:
+  - name: environments
+    displayName: The environments of environments/
+    type: object
+    default:
+      - dev
+      - prod
+
+# Any branch: environments/ says which ones deploy.
 trigger:
   branches:
     include:
-      - develop
-      - main
+      - "*"
   paths:
     include:
       - fabric-workspace
       - environments
       - scripts/deploy.py
+      - scripts/environments.py
 
 pr: none
 
@@ -49,37 +60,41 @@ pool:
 
 variables:
   - group: fabric
-  # The environment of the branch: environments/<ENVIRONMENT>.json gives
-  # its workspace and parameters.
-  - ${{ if eq(variables['Build.SourceBranch'], 'refs/heads/main') }}:
-      - name: ENVIRONMENT
-        value: PRD
-  - ${{ elseif eq(variables['Build.SourceBranch'], 'refs/heads/develop') }}:
-      - name: ENVIRONMENT
-        value: DEV
-  - ${{ else }}:
-      - name: ENVIRONMENT
-        value: none
 
 stages:
-  - ${{ if eq(variables.ENVIRONMENT, 'none') }}:
-      - stage: NoEnvironment
-        displayName: No environment for this branch
-        jobs:
-          - job: Fail
-            steps:
-              - checkout: none
-              - script: |
-                  echo "##vso[task.logissue type=error]Only develop and main deploy: develop to DEV, main to PRD."
-                  exit 1
-                displayName: Fail
-  - ${{ else }}:
-      - stage: Deploy
-        displayName: Deploy to ${{ variables.ENVIRONMENT }}
+  - stage: Environment
+    displayName: Environment of the branch
+    jobs:
+      - job: Branch
+        steps:
+          - checkout: self
+
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: "3.13"
+
+          - script: pip install "pyyaml>=6,<7"
+            displayName: Install PyYAML
+
+          - script: |
+              name=$(python scripts/environments.py --branch "$(Build.SourceBranch)")
+              echo "##vso[task.setvariable variable=name;isOutput=true]$name"
+              echo "Branch $(Build.SourceBranch) deploys to: ${name:-nothing}"
+            name: Resolve
+            displayName: Environment of the branch
+
+  - ${{ each environment in parameters.environments }}:
+      - stage: Deploy_${{ replace(environment, '-', '_') }}
+        displayName: Deploy to ${{ environment }}
+        dependsOn: Environment
+        condition: >
+          and(succeeded(),
+          eq(dependencies.Environment.outputs['Branch.Resolve.name'],
+          '${{ environment }}'))
         jobs:
           - deployment: Deploy
-            displayName: Deploy to ${{ variables.ENVIRONMENT }}
-            environment: ${{ variables.ENVIRONMENT }}
+            displayName: Deploy to ${{ environment }}
+            environment: ${{ environment }}
             strategy:
               runOnce:
                 deploy:
@@ -91,12 +106,14 @@ stages:
                       inputs:
                         versionSpec: "3.13"
 
-                    - script: pip install "pyfabricops>=0.11.0,<0.12.0"
+                    - script: >
+                        pip install "pyfabricops>=0.11.0,<0.12.0"
+                        "pyyaml>=6,<7"
                       displayName: Install pyfabricops
 
                     - script: >
                         python scripts/deploy.py
-                        --environment $(ENVIRONMENT)
+                        --environment ${{ environment }}
                       displayName: Deploy
                       env:
                         # Secret variables reach a script only when mapped.
