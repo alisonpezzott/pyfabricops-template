@@ -909,6 +909,11 @@ def mirroring_in_place(
     for mirror in mirrors(items):
         try:
             if start:
+                print(
+                    f"{label(mirror.key)}: starting its mirroring where it "
+                    f"does not run, and waiting up to "
+                    f"{MIRRORING_TIMEOUT // 60} minutes..."
+                )
                 status = pf.start_mirroring_and_wait(
                     workspace_id, mirror.name, timeout=MIRRORING_TIMEOUT
                 )
