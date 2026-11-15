@@ -191,7 +191,7 @@ deployed but neither bound nor refreshed.
 
 ## Before you start
 
-- **pyfabricops 0.10.0 or later.**
+- **pyfabricops 0.11.0 or later.**
 - **A service principal**, allowed to call the Fabric and Power BI APIs by
   the tenant settings, Contributor of each workspace it deploys to, and able
   to read the items of DEV when DEV is connected to Git.
