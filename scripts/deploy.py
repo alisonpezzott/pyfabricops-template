@@ -867,16 +867,33 @@ def map_connections(
         print(f"Connection {old} becomes {new}.")
 
     targets = {str(c["id"]).lower(): c for c in mapping.values()}
+    # The connection of dev each connection of the environment replaces.
+    replaced = {str(new["id"]).lower(): old for old, new in mapping.items()}
+    shared = (
+        "a database feeds one mirrored database only, so give "
+        f"{environment.name} a database and a connection of its own"
+    )
     for mirror in mirrors(items):
         connection = str(mirror_source(mirror).get("connection", "")).lower()
         if connection in targets:
-            path_ = str(
-                (targets[connection].get("connectionDetails") or {}).get(
-                    "path", ""
-                )
-            )
+            path_ = connection_path(targets[connection])
             database = path_.split(";")[1] if ";" in path_ else ""
-            if database:
+            before = connection_path(by_id.get(replaced[connection], {}))
+            if path_ and path_.lower() == before.lower():
+                print(
+                    f"{label(mirror.key)}: the connection of "
+                    f"{environment.name} reaches {path_}, as the one of dev "
+                    f"does; {shared}."
+                )
+            if not database:
+                print(
+                    f"{label(mirror.key)}: the service principal cannot read "
+                    "the database of its new connection, so it keeps "
+                    f"database {mirror_source(mirror).get('database')}: make "
+                    "it a user of the connection, or give the connection by "
+                    "name."
+                )
+            else:
                 file = mirror.folder / "mirroring.json"
                 content = json.loads(file.read_text(encoding="utf-8-sig"))
                 content["properties"]["source"]["typeProperties"][
@@ -890,9 +907,15 @@ def map_connections(
             name = by_id.get(connection, {}).get("displayName", connection)
             print(
                 f"{label(mirror.key)} keeps connection {name}, the one of "
-                f"its source in dev: give the one of {environment.name} in "
+                f"its source in dev, and would replicate it too; {shared}, in "
                 f"connections of {environment.file.name}."
             )
+
+
+def connection_path(connection: Mapping[str, Any]) -> str:
+    """The ``server;database`` path of a connection, or empty."""
+    details = connection.get("connectionDetails") or {}
+    return str(details.get("path") or "")
 
 
 def mirroring_in_place(
@@ -910,8 +933,8 @@ def mirroring_in_place(
         try:
             if start:
                 print(
-                    f"{label(mirror.key)}: starting its mirroring where it "
-                    f"does not run, and waiting up to "
+                    f"{label(mirror.key)}: checking that its mirroring "
+                    "runs, and starting it if not, waiting up to "
                     f"{MIRRORING_TIMEOUT // 60} minutes..."
                 )
                 status = pf.start_mirroring_and_wait(
@@ -1270,6 +1293,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             t for t in ITEM_TYPES if ids is not None or t in WITHOUT_GIT
         ]
         # The workspace is the state: what differs from it is what to send.
+        print(
+            f"Comparing {len(items)} item(s) with {environment.name}: Fabric "
+            "returns the definition of each one, which takes a while..."
+        )
         reconciliation = pf.reconcile_items(
             target, str(staging), str(staging), item_types=managed
         )
