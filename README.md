@@ -27,7 +27,7 @@ without one, and the environments may mix them.
 ├── fabric-workspace/                 the items: Git folder of DEV, or a Power BI Project
 ├── environments/DEV.json             DEV: its workspace, connected to Git
 ├── environments/PRD.json             PRD: its workspace and value set
-├── scripts/deploy.py                 deploys, plans, reconciles, restores
+├── scripts/deploy.py                 deploys, plans, reconciles
 ├── azure-pipelines/deploy.yml        Azure DevOps: deploy when develop or main changes
 ├── azure-pipelines/reconcile.yml     Azure DevOps: drift report, weekdays
 ├── .github/workflows/deploy.yml      GitHub Actions: deploy when develop or main changes
@@ -102,8 +102,7 @@ the reconcile job reports it as drift.
 
 Everything that tells DEV from PRD is in `environments/<ENV>.json`, in Git
 and reviewed in pull requests like the items. The file name is the
-environment name passed to `--environment`, and it also keys the deployment
-state.
+environment name passed to `--environment`.
 
 The environment connected to Git gives its workspace and nothing else. At
 most one environment may be connected:
@@ -126,7 +125,8 @@ of its variable libraries and the parameters of its semantic models:
     "<model name>": {
       "<parameter name>": "<value in PRD>"
     }
-  }
+  },
+  "keep": ["Sandbox .*"]
 }
 ```
 
@@ -136,6 +136,7 @@ of its variable libraries and the parameters of its semantic models:
 | `gitConnected` | `true` for the environment Fabric Git integration writes. No run deploys to it, and the script reads its items to translate their IDs. |
 | `valueSet` | The value set made active in every variable library after the deployment. Every library must have it, with this exact name, and the run stops when the repository has no variable library. Without it, the libraries keep their default values, which are those of DEV. |
 | `parameters` | The text parameters of each semantic model, by model and parameter name. A parameter left out keeps the value of the repository, the one of DEV, and the run says which; so does a parameter that is not text, such as a date, which the file cannot set. A model or parameter the repository does not have stops the run, so a misspelled name never goes unnoticed. |
+| `keep` | The names of the items `--allow-deletions` leaves in the workspace although the repository does not have them, as regular expressions matched against the whole display name, such as `"Sandbox .*"`. Escape `.`, `(` and the other special characters of a literal name. |
 
 Whether the workspace is on a capacity is not in the file: the script reads
 it from Fabric.
@@ -164,30 +165,62 @@ For the environment of the branch, `scripts/deploy.py`:
    workspace gets the logical ID of that item in the target. The query URI
    of each eventhouse and the SQL endpoint of DEV become those of the
    target as well.
-6. Deploys one item type at a time, in the dependency order of pyfabricops,
-   with pipelines last. An item then refers by ID only to items already in
-   the target, and a report bound to its model by path goes bound to the ID
-   of the model there. Within a type, the items the others refer to go
-   first, such as a lakehouse a shortcut points to. The run stops before it
-   sends an item that would still refer to DEV.
-7. With the deployment state, sends only what changed in Git since the last
-   successful deployment. A model whose parameters in the workspace differ
-   from those it is deployed with is sent again.
-8. Makes the value set of the environment active in each variable library,
+6. Reconciles the staging copy with the workspace: reads the definition of
+   every item found on both sides and compares them. The workspace is the
+   deployment state, so nothing else records what a run sent.
+7. Sends only the items the workspace lacks or that differ from the
+   repository, whether Git changed them or someone changed them in the
+   workspace; a model whose parameters there differ is one of them. An
+   item whose definition Fabric does not return cannot be compared, so
+   every item of its type is sent. A run that failed leaves nothing to
+   resume: the next one sends what still differs.
+8. Sends them one item type at a time, in the dependency order of
+   pyfabricops, with pipelines last. An item then refers by ID only to
+   items already in the target, and a report bound to its model by path
+   goes bound to the ID of the model there. Within a type, the items the
+   others refer to go first, such as a lakehouse a shortcut points to. The
+   run stops before it sends an item that would still refer to DEV.
+9. Makes the value set of the environment active in each variable library,
    and reads it back. The active value set is not part of the definition, so
    no deployment sets it otherwise.
-9. For each import model deployed, never refreshed, or whose last refresh
-   failed: the service principal takes the model over; each SQL data source
-   is bound to the **shareable cloud connection** of the same
-   `server;database`; and the model is refreshed and the run waits for it.
-   The refresh is a plain one, without the options of an enhanced refresh,
-   which a workspace without a capacity refuses. A Direct Lake model is left
-   alone: it reads its tables as they are loaded.
-10. Publishes each data agent it deployed: its users get only what is
+10. With `--allow-deletions`, deletes the orphans: the items of the types
+    the run manages that the workspace holds and the repository does not.
+    See [Deletions](#deletions).
+11. For each import model deployed, never refreshed, or whose last
+    refresh failed: the service principal takes the model over; each SQL
+    data source is bound to the **shareable cloud connection** of the same
+    `server;database`; and the model is refreshed and the run waits for it.
+    The refresh is a plain one, without the options of an enhanced refresh,
+    which a workspace without a capacity refuses. A Direct Lake model is
+    left alone: it reads its tables as they are loaded.
+12. Publishes each data agent it deployed: its users get only what is
     published.
 
 The run fails when any step fails, and the next run retries a model that was
 deployed but neither bound nor refreshed.
+
+## Deletions
+
+An orphan is an item the workspace holds and the repository does not, of a
+type the run manages. Nothing tells whether it was deleted in Git or created
+in the workspace by hand, so every run lists the orphans, and only a run
+with `--allow-deletions` deletes them, once every other item is deployed and
+in the reverse of the deployment order, so that a report goes before its
+model. `--plan` lists what it would delete.
+
+Some orphans are never deleted, with or without the option:
+
+- **Items that hold data:** lakehouses, warehouses, eventhouses and KQL
+  databases. Delete them by hand.
+- **Items whose name matches `keep`** in the file of the environment.
+- **Items of a type the run does not manage**, such as a dashboard, or
+  without DEV connected to Git, any item but a variable library, a semantic
+  model or a report.
+
+A semantic model or a report deleted this way is gone for good; Fabric keeps
+other types in the workspace recycle bin. The pipelines do not pass
+`--allow-deletions`: add it once the repository holds every item the
+workspace should have.
 
 ## Before you start
 
@@ -201,12 +234,6 @@ deployed but neither bound nor refreshed.
   ID is configured. The service principal must also be a user of the
   connection of each OneLake shortcut to an external source, or the
   lakehouse that holds it fails to deploy.
-- **A place for the deployment state:**
-  - `pyfabricops/state`, a branch of this repository that the first
-    deployment creates (`--state-branch`), as the pipelines do. The pipeline
-    needs the right to push to it.
-  - A lakehouse (`--state-workspace` and `--state-lakehouse`).
-  - A local folder (`--state-dir`), for runs on your machine.
 - **A `.env` file**, copied from `.env.example`, with the credentials of the
   service principal. Keep it out of Git.
 
@@ -223,14 +250,10 @@ python scripts/deploy.py --environment PRD --plan
 | *(none)* | Deploys, activates the value set, binds and refreshes. |
 | `--plan` | Prints the plan and changes nothing. |
 | `--reconcile` | Reports how the workspace stands against the repository, including model parameters and active value sets, and changes nothing. Exits with 1 when anything differs. |
-| `--restore` | Brings back what drifted, makes the value set active again, binds and refreshes the models it restored, and deletes nothing. |
-| `--state-branch pyfabricops/state` | Keeps the deployment state on a branch: only what changed in Git since the last successful run is sent, and a lock keeps two runs from deploying at the same time. |
-| `--state-workspace`, `--state-lakehouse` | Keeps the deployment state in a lakehouse instead. Both go together. |
-| `--state-dir` | Keeps the deployment state in a local folder instead. |
 | `--workspace` | Deploys to another workspace than the one of the file. |
 | `--source` | Reads the items from another folder than `fabric-workspace`. |
 | `--no-refresh` | Binds the models but does not refresh them. |
-| `--allow-deletions` | Deletes from the workspace the items deleted in Git. Without it, an item deleted in Git fails the deployment until it is deleted by hand. |
+| `--allow-deletions` | Deletes the orphans of the workspace, but those that hold data and those of `keep`. Without it, they are only reported. |
 | `--log-level` | How much pyfabricops logs as the run goes: `INFO` by default, `DEBUG` for each API call, payloads included. |
 
 ## Deploy from CI
@@ -246,8 +269,7 @@ The pipelines run the same script. The branch picks the environment:
 | Environment of a run | picked from the branch when the pipeline is compiled: a run holds the stage of its own environment only, and nothing is edited at queue time | picked from the branch by the job |
 | Approval | an Approval check on the environment `PRD` | required reviewers on the environment `prd` |
 | One run at a time | an Exclusive Lock check on each environment | `concurrency`, per branch |
-| History | `fetchDepth: 0` | `fetch-depth: 0` |
-| Deployment state | Contribute and Create branch for the build service of the project, and `persistCredentials: true` on the checkout | `permissions: contents: write`, or `contents: read` to reconcile |
+| Repository access | read only | `permissions: contents: read` |
 
 In Azure DevOps, create each pipeline from **Existing Azure Pipelines YAML
 file**, pointing at the file in `azure-pipelines/`. Allow both pipelines to
@@ -273,10 +295,13 @@ rule.
   model first published to the workspace by someone else.
 - **Moving a workspace to a capacity, or off one, changes nothing here,**
   unless the repository has items a Pro workspace cannot hold.
-- **Pointing an environment at another workspace is safe.** The state
-  recorded for the old workspace is ignored, so the first run deploys every
-  item to the new one.
-- **The state branch is not a code branch.** Each deployment pushes commits
-  to `pyfabricops/state`, marked `[skip ci]`. Never merge it, and leave it
-  out of the rules that ask for a pull request or signed commits. Its
-  history keeps who took each lock: in a public repository, that is public.
+- **Pointing an environment at another workspace is safe.** Nothing is
+  recorded about the old one, so the first run sends every item to the new
+  one.
+- **Each run reads every definition of the workspace.** That is the price
+  of keeping no state: a workspace of dozens of items takes a little longer
+  to compare, and nothing has to be stored, pushed or locked.
+- **An item the service rewrites is sent on every run.** If a definition
+  comes back from Fabric different from what Git holds, the item counts as
+  changed each time, and an import model is refreshed each time. Run
+  `--reconcile` right after a deployment: it should report nothing.

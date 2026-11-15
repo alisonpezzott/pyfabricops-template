@@ -30,9 +30,7 @@ pipelines last, so that an item refers by ID only to items already in the
 target, and a report bound to a model by path is sent bound to its ID there.
 Within a type, the items the others refer to are created first, such as a
 lakehouse a shortcut points to. A run stops before it sends an item that
-would still refer to DEV. A type that neither the repository nor the target
-has is skipped: its run would do nothing, but still take the lock and record
-the state.
+would still refer to DEV. A type with nothing to send is skipped.
 
 Some items stop the run before anything is deployed: an item of a type
 pyfabricops does not deploy; without DEV connected to Git, any item but a
@@ -64,10 +62,11 @@ A variable library is sent as it is: its value sets hold what differs
 between environments, for the items that read it. The value set of the
 environment, which every library must have, is made active in each once it
 is deployed, and read back: the active value set is no part of the
-definition, so no deployment sets it. --reconcile checks it, and --restore
-makes it active again. An environment without one keeps the default values:
-a library starts on them, and the script leaves its active value set alone,
-as the Fabric API documents no way back to them.
+definition, so no deployment sets it; each run makes it active again
+where it is not, and --reconcile checks it. An environment without one
+keeps the default values: a library starts on them, and the script leaves
+its active value set alone, as the Fabric API documents no way back to
+them.
 
 The repository keeps the parameter values DEV opens with. In the staging
 copy, which leaves out what Git ignores, such as the data cache of Power BI
@@ -76,9 +75,7 @@ keep, the text parameters of each semantic model get the values the file of
 the environment gives. A parameter it does not give keeps the value of the
 repository, such as the database of DEV, and the run says which; a model or
 a parameter the repository does not have stops the run, as a misspelled
-name would leave that value unnoticed. The repository is never changed. A
-model whose parameters in the workspace differ from those it is deployed
-with is deployed again, even when Git did not change it.
+name would leave that value unnoticed. The repository is never changed.
 
 A semantic model carries no credentials, and an import model arrives empty.
 So each import model deployed, or never refreshed, or whose last refresh
@@ -90,21 +87,31 @@ both. A workspace without a capacity refreshes a model at most eight times a
 day; --no-refresh only binds. A Direct Lake model is left alone: it reads
 the tables of its source as they are loaded.
 
-With a deployment state, on a branch of this repository (--state-branch),
-in a lakehouse (--state-workspace and --state-lakehouse) or in a folder
-(--state-dir), a run deploys only what changed in Git since the last
-successful one, and holds a lock, so that two runs never deploy at a time.
+The workspace is its own deployment state: nothing records what a run
+sent. Each run compares the staging copy with the definitions the target
+returns, and sends only the items it lacks or that differ, whether Git
+changed them or someone changed them in the workspace, a model whose
+parameters differ included. A run that failed leaves nothing to resume: the
+next one sends what still differs. An item whose definition Fabric does not
+return cannot be compared, so every item of its type is sent. Two runs to
+one environment are kept apart by the pipeline, not by the script.
 
-Instead of deploying, --plan prints the plan; --reconcile reports how the
-target stands against the repository, its parameters and active value sets
-included, and changes nothing; --restore brings back what drifted there,
-makes the value set active again, binds and refreshes the models it
-restored, and deletes nothing.
+An item the target holds and the repository does not, an orphan, is only
+reported, unless --allow-deletions is given. It then deletes the orphans of
+the types the run manages, once every item is deployed, but never a
+lakehouse, a warehouse, an eventhouse or a KQL database, which hold data,
+nor an item whose name matches a pattern of ``keep`` in the file of the
+environment. A workspace deployed this way is written by this script alone.
+
+Instead of deploying, --plan prints what a run would send and delete;
+--reconcile reports how the target stands against the repository, its
+active value sets included, changes nothing, and exits with 1 when anything
+differs.
 
 Usage::
 
-    python deploy.py --environment <env> [--plan | --reconcile | --restore]
-    python deploy.py --environment <env> --state-branch pyfabricops/state
+    python deploy.py --environment <env> [--plan | --reconcile]
+    python deploy.py --environment <env> --allow-deletions
 """
 
 from __future__ import annotations
@@ -129,7 +136,7 @@ from dotenv import load_dotenv
 ItemKey = tuple[str, str]
 # The parameters of each semantic model, by model and parameter name.
 Parameters = dict[str, dict[str, str]]
-# deploy_all_items or restore_items: what a run does to the items of a type.
+# restore_items or deploy_all_items: what a run does to the items of a type.
 Operation = Callable[..., Any]
 
 # The root of the repository, one folder above this script.
@@ -148,6 +155,8 @@ ITEM_TYPES = [t for t in pf.DEPLOY_ORDER if t != "DataPipeline"] + [
 WITHOUT_GIT = ("VariableLibrary", "SemanticModel", "Report")
 # What a workspace holds without a capacity, as a Pro workspace.
 ANY_WORKSPACE = ("SemanticModel", "Report")
+# What holds data, so that no run deletes it, even as an orphan.
+HOLDS_DATA = ("Lakehouse", "Warehouse", "Eventhouse", "KQLDatabase")
 # What a deployment did to an item that sent its definition.
 SENT = ("created", "updated")
 # The refresh statuses that need no new refresh: done, or still running.
@@ -417,6 +426,12 @@ class Environment:
     value_set: str | None
     # The parameter values of each semantic model, as the file gives them.
     parameters: Mapping[str, Any]
+    # The names of the orphans --allow-deletions leaves in the workspace.
+    keep: tuple[re.Pattern[str], ...] = ()
+
+    def keeps(self, name: str) -> bool:
+        """Whether an orphan of this name stays in the workspace."""
+        return any(pattern.fullmatch(name) for pattern in self.keep)
 
 
 def read_environment(name: str) -> Environment:
@@ -432,7 +447,8 @@ def read_environment(name: str) -> Environment:
     git_connected = content.get("gitConnected", False)
     value_set = content.get("valueSet")
     parameters = content.get("parameters", {})
-    keys = {"workspace", "gitConnected", "valueSet", "parameters"}
+    keep = content.get("keep", [])
+    keys = {"workspace", "gitConnected", "valueSet", "parameters", "keep"}
     problems = [
         f"{file.name}: unknown key {key}."
         for key in sorted(set(content) - keys)
@@ -445,7 +461,7 @@ def read_environment(name: str) -> Environment:
         problems += [
             f"{file.name}: {key}, but it is connected to Git, and no run "
             "deploys to it."
-            for key in ("valueSet", "parameters")
+            for key in ("valueSet", "parameters", "keep")
             if key in content
         ]
     if value_set is not None and (
@@ -454,10 +470,25 @@ def read_environment(name: str) -> Environment:
         problems.append(f"{file.name}: valueSet is not a name.")
     if not isinstance(parameters, dict):
         problems.append(f"{file.name}: parameters is not an object.")
+    patterns: list[re.Pattern[str]] = []
+    if not isinstance(keep, list):
+        problems.append(f"{file.name}: keep is not a list of names.")
+    else:
+        for entry in keep:
+            try:
+                patterns.append(re.compile(str(entry)))
+            except re.error as error:
+                problems.append(f"{file.name}: keep {entry!r}: {error}.")
     if problems:
         raise SystemExit("\n".join(problems))
     return Environment(
-        name, file, str(workspace), git_connected, value_set, parameters
+        name,
+        file,
+        str(workspace),
+        git_connected,
+        value_set,
+        parameters,
+        tuple(patterns),
     )
 
 
@@ -580,31 +611,66 @@ def apply_parameters(
     return deployed
 
 
-def stale_models(
-    workspace_id: str, items: Sequence[SourceItem], parameters: Parameters
-) -> list[SourceItem]:
-    """The models of the workspace whose parameters differ from those given."""
+def to_send(reconciliation: Any) -> set[str]:
+    """
+    The item types a run sends: those with an item the target lacks, one
+    that differs, or one whose definition could not be compared.
+    """
+    types = {action.item_type for action in reconciliation.plan.actions}
+    return types | {item_type for item_type, _ in reconciliation.unchecked}
+
+
+def orphans(
+    reconciliation: Any, managed: Sequence[str], environment: Environment
+) -> tuple[list[ItemKey], list[ItemKey]]:
+    """
+    The items the target holds and the repository does not, of the types
+    the run manages: those --allow-deletions deletes, and those it keeps,
+    as they hold data or the environment keeps their name. The items to
+    delete go in the reverse of the deployment order, so that an item goes
+    before what it refers to, as a report before its model.
+    """
+    found = [
+        (item.item_type, item.display_name)
+        for item in reconciliation.unmanaged
+        if item.item_type in managed
+    ]
+    kept = [
+        key
+        for key in found
+        if key[0] in HOLDS_DATA or environment.keeps(key[1])
+    ]
+    order = {item_type: n for n, item_type in enumerate(ITEM_TYPES)}
+    deleted = sorted(
+        (key for key in found if key not in kept),
+        key=lambda key: (-order[key[0]], key[1]),
+    )
+    return deleted, kept
+
+
+def delete_orphans(workspace_id: str, orphaned: Sequence[ItemKey]) -> bool:
+    """
+    Delete items from the workspace; True when all were deleted.
+
+    Each is deleted by its ID, as a report and its model may share a name.
+    """
     target = list_workspace(workspace_id)
-    stale: list[SourceItem] = []
-    for model in models(items):
-        existing = target.get(model.key)
+    ok = True
+    for key in orphaned:
+        existing = target.get(key)
         if existing is None:
             continue
-        result = power_bi(
-            f"/groups/{workspace_id}/datasets/{existing['id']}/parameters"
+        result = pf.api_request(
+            f"/workspaces/{workspace_id}/items/{existing['id']}",
+            method="delete",
+            return_result=True,
         )
-        if not result.success:
-            raise SystemExit(
-                f"{label(model.key)}: could not read its parameters: "
-                f"{result.error}"
-            )
-        current = {
-            str(p["name"]): str(p.get("currentValue"))
-            for p in (result.data or {}).get("value", [])
-        }
-        if any(current.get(k) != v for k, v in parameters[model.name].items()):
-            stale.append(model)
-    return stale
+        if result.success:
+            print(f"{label(key)}: deleted.")
+        else:
+            print(f"{label(key)}: could not delete it: {result.error}")
+            ok = False
+    return ok
 
 
 def drop_local_files(
@@ -694,14 +760,13 @@ def run_type(
     sources: Sequence[SourceItem],
 ) -> list[Any] | None:
     """
-    Deploy or restore the items of a type: what was done to each, or None
-    when an item failed.
+    Send the items of a type: what was done to each, or None when an item
+    failed.
 
     With the IDs of DEV to translate, the items the others refer to by ID
-    are created first, in runs of their own and without the state, which
-    the run of the whole type reads and, for a deployment, records. ids is
-    the pf.WorkspaceIdMap from DEV to the target, and sources the items of
-    the repository.
+    are created first, in runs of their own, before the run of the whole
+    type. ids is the pf.WorkspaceIdMap from DEV to the target, and sources
+    the items of the repository.
     """
     run = {**arguments, "item_types": [item_type]}
     if ids is None:
@@ -962,20 +1027,6 @@ def value_set_in_place(
     return ok
 
 
-def state_backend(args: argparse.Namespace) -> Any:
-    """The state on a branch, in a lakehouse or in a folder, if one is given."""
-    if args.state_branch:
-        # The repository of the items, whose remote keeps the branch.
-        return pf.GitStateBackend(str(args.source), args.state_branch)
-    if args.state_lakehouse:
-        return pf.OneLakeStateBackend(
-            args.state_workspace, args.state_lakehouse
-        )
-    if args.state_dir:
-        return pf.LocalJsonStateBackend(str(args.state_dir))
-    return None
-
-
 def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     """Read the command line."""
     parser = argparse.ArgumentParser(
@@ -986,8 +1037,8 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         "--environment",
         required=True,
         help="The environment to deploy to, such as PRD: the file of the "
-        "environments folder of that name gives its workspace, value set and "
-        "parameters, and the deployment state is kept under it.",
+        "environments folder of that name gives its workspace, value set, "
+        "parameters and the orphans it keeps.",
     )
     parser.add_argument(
         "--workspace",
@@ -1002,28 +1053,11 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         "fabric-workspace folder next to this script",
     )
     parser.add_argument(
-        "--state-branch",
-        help="The branch of this repository that keeps the state, such as "
-        "pyfabricops/state. The first deployment creates it; each run "
-        "pushes to it.",
-    )
-    parser.add_argument(
-        "--state-workspace",
-        help="The workspace, by name or ID, of the lakehouse of the state.",
-    )
-    parser.add_argument(
-        "--state-lakehouse",
-        help="The lakehouse, by name or ID, that keeps the state.",
-    )
-    parser.add_argument(
-        "--state-dir",
-        type=Path,
-        help="The folder of the state, for a local run.",
-    )
-    parser.add_argument(
         "--allow-deletions",
         action="store_true",
-        help="Delete from the workspace the items deleted in Git.",
+        help="Delete from the workspace the items the repository does not "
+        "have, of the types the run manages, but those that hold data and "
+        "those the environment keeps.",
     )
     parser.add_argument(
         "--no-refresh",
@@ -1042,7 +1076,7 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     mode.add_argument(
         "--plan",
         action="store_true",
-        help="Print the plan, and change nothing.",
+        help="Print what a run would send and delete, and change nothing.",
     )
     mode.add_argument(
         "--reconcile",
@@ -1050,24 +1084,11 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         help="Report how the target stands against the repository, and "
         "change nothing.",
     )
-    mode.add_argument(
-        "--restore",
-        action="store_true",
-        help="Bring back what drifted in the target, and delete nothing.",
-    )
-    args = parser.parse_args(argv)
-    if bool(args.state_workspace) != bool(args.state_lakehouse):
-        parser.error("--state-workspace and --state-lakehouse go together")
-    stores = (args.state_branch, args.state_lakehouse, args.state_dir)
-    if sum(bool(store) for store in stores) > 1:
-        parser.error(
-            "give one of --state-branch, --state-lakehouse or --state-dir"
-        )
-    return args
+    return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Deploy, plan, reconcile or restore; 0 when all went well."""
+    """Deploy, plan or reconcile; 0 when all went well."""
     args = parse_args(argv)
     # A pipeline gives no terminal, and Python would hold the output back
     # until the end; each line goes out as it is written instead.
@@ -1112,7 +1133,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         given = read_parameters(environment, items)
         value_set = read_value_set(environment, items)
         # Those of the file, and of the repository for the others.
-        parameters = apply_parameters(items, given)
+        apply_parameters(items, given)
         ids = None
         if source is not None:
             print(
@@ -1126,105 +1147,69 @@ def main(argv: Sequence[str] | None = None) -> int:
         managed = [
             t for t in ITEM_TYPES if ids is not None or t in WITHOUT_GIT
         ]
-        state: dict[str, Any] = {
-            "start_path": str(staging),
-            "state_backend": state_backend(args),
-            "environment": environment.name,
-        }
+        # The workspace is the state: what differs from it is what to send.
+        reconciliation = pf.reconcile_items(
+            target, str(staging), str(staging), item_types=managed
+        )
+        print("== Reconciliation")
+        print(reconciliation.describe())
+        deleted, kept = orphans(reconciliation, managed, environment)
+        for key in kept:
+            print(f"{label(key)}: an orphan this script never deletes.")
 
         if args.reconcile:
-            reconciliation = pf.reconcile_items(
-                target, str(staging), item_types=managed, **state
-            )
-            print(reconciliation.describe())
-            stale = stale_models(target, items, parameters)
-            for model in stale:
-                print(
-                    f"{label(model.key)}: its parameters differ from "
-                    f"{environment.file.name} and the repository."
-                )
             in_place = value_set_in_place(
                 target, items, value_set, change=False
             )
-            return 0 if reconciliation.ok and not stale and in_place else 1
+            return 0 if reconciliation.ok and in_place else 1
 
-        arguments = state
-        operation: Operation = pf.restore_items
-        stale = []
-        if not args.restore:
-            arguments = {
-                **state,
-                # The items in Git, which the staging copy came from.
-                "repository_path": str(args.source),
-                "allow_deletions": args.allow_deletions,
-            }
-            operation = pf.deploy_all_items
-            print("== Plan")
-            plan = pf.plan_all_items(
-                target, str(staging), item_types=managed, **arguments
+        for item in items:
+            found = (
+                ids.references(item.key, item.folder).missing
+                if ids is not None
+                else set()
             )
-            print(plan.describe())
-            for item in items:
-                found = (
-                    ids.references(item.key, item.folder).missing
-                    if ids is not None
-                    else set()
-                )
-                if found:
-                    names = ", ".join(map(label, sorted(found)))
-                    print(
-                        f"{label(item.key)} refers to {names}, not there yet."
-                    )
-            # Git did not change these, so the plan leaves them out.
-            stale = stale_models(target, items, parameters)
-            for model in stale:
-                print(
-                    f"{label(model.key)}: its parameters in the workspace "
-                    f"differ from {environment.file.name} and the repository, "
-                    "so it is deployed again."
-                )
-            if args.plan:
-                return 0
+            if found:
+                names = ", ".join(map(label, sorted(found)))
+                print(f"{label(item.key)} refers to {names}, not there yet.")
+        verb = "deletes" if args.allow_deletions else "would delete"
+        for key in deleted:
+            print(f"{label(key)}: an orphan --allow-deletions {verb}.")
+        if args.plan:
+            return 0
 
-        # A type the target has, but no longer the repository, still runs:
-        # its run tells about the items deleted in Git.
-        present = {item.item_type for item in items}
-        present |= {item_type for item_type, _ in list_workspace(target)}
+        sending = to_send(reconciliation)
+        arguments = {"start_path": str(staging)}
         results: list[Any] = []
-        for item_type in [t for t in managed if t in present]:
-            print(f"-- {item_type}...")
-            done = run_type(
-                item_type,
-                operation,
-                target,
-                staging,
-                arguments,
-                ids,
-                items,
-            )
-            if done is None:
-                return 1
-            results += done
+        for item_type in managed:
+            if item_type in sending:
+                print(f"-- {item_type}...")
+                # An item that could not be compared goes with its whole type.
+                unchecked = any(
+                    t == item_type for t, _ in reconciliation.unchecked
+                )
+                operation: Operation = (
+                    pf.deploy_all_items if unchecked else pf.restore_items
+                )
+                done = run_type(
+                    item_type,
+                    operation,
+                    target,
+                    staging,
+                    arguments,
+                    ids,
+                    items,
+                )
+                if done is None:
+                    return 1
+                results += done
+            # The value set is checked even when no library differs.
             if item_type == "VariableLibrary" and not value_set_in_place(
                 target, items, value_set, change=True
             ):
                 return 1
-        sent = {
-            (r.item_type, r.display_name) for r in results if r.action in SENT
-        }
-        again = [model for model in stale if model.key not in sent]
-        if again:
-            # A run of their own, without the state: Git did not change them.
-            root = subset(staging, again, staging.parent / "parameters")
-            redeployed = pf.deploy_all_items(
-                target,
-                str(root),
-                start_path=str(root),
-                item_types=["SemanticModel"],
-            )
-            if not report(redeployed, "SemanticModel, parameters"):
-                return 1
-            results += redeployed.results
+        if args.allow_deletions and not delete_orphans(target, deleted):
+            return 1
         published = publish_data_agents(target, results)
         ready = prepare_models(target, items, results, refreshed=args.refresh)
         return 0 if ready and published else 1

@@ -3,12 +3,10 @@
 # anything differs, so that someone looks. It never changes a workspace. A
 # report published to DEV from Power BI Desktop shows here as drift.
 #
-# It uses the "dev" and "prd" environments of deploy.yml, and reads the
-# deployment state from the pyfabricops/state branch, to tell drift from a
-# deployment still to run. It never saves the state, so reading is enough. To
-# bring back what drifted instead of failing, replace --reconcile with
-# --restore, which also binds and refreshes what it restores, and give the
-# job contents: write. Nothing is deleted either way.
+# It uses the "dev" and "prd" environments of deploy.yml. A difference may
+# be drift in the workspace or a change of the branch still to deploy; to
+# bring the workspace back instead of failing, run the Deploy workspace
+# workflow, which sends what differs and deletes nothing unless allowed.
 
 name: Reconcile workspace
 
@@ -34,7 +32,6 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ matrix.environment }}
     permissions:
-      # The deployment state is read from the pyfabricops/state branch.
       contents: read
     steps:
       - uses: actions/checkout@v5
@@ -54,7 +51,6 @@ jobs:
           python scripts/deploy.py
           --reconcile
           --environment ${{ matrix.name }}
-          --state-branch pyfabricops/state
         env:
           FAB_TENANT_ID: ${{ secrets.FAB_TENANT_ID }}
           FAB_CLIENT_ID: ${{ secrets.FAB_CLIENT_ID }}

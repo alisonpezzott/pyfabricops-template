@@ -22,13 +22,14 @@
 # - A shareable cloud connection to the server and database of each
 #   environment, of which the service principal is a user: each semantic
 #   model is bound to it.
-# - Contribute and Create branch for the build service of the project on
-#   this repository (Project settings > Repositories > Security): the job
-#   pushes the deployment state to the pyfabricops/state branch, which the
-#   first run creates, one state per environment. Its commits say [skip ci].
-#   Never merge that branch.
 # - The pipeline itself: Pipelines > New pipeline > Existing Azure Pipelines
 #   YAML file, this one.
+#
+# Nothing records the deployment: each run compares the repository with the
+# workspace and sends what differs, so the build service only reads the
+# repository. To delete the items of the workspace that the repository no
+# longer has, add --allow-deletions to the Deploy step (see deploy.py for
+# what it never deletes).
 
 trigger:
   branches:
@@ -85,11 +86,6 @@ stages:
                   steps:
                     # A deployment job checks out nothing unless asked.
                     - checkout: self
-                      # The whole history: the run compares commits.
-                      fetchDepth: 0
-                      # git pushes the deployment state with the token of
-                      # the job.
-                      persistCredentials: true
 
                     - task: UsePythonVersion@0
                       inputs:
@@ -101,7 +97,6 @@ stages:
                     - script: >
                         python scripts/deploy.py
                         --environment $(ENVIRONMENT)
-                        --state-branch pyfabricops/state
                       displayName: Deploy
                       env:
                         # Secret variables reach a script only when mapped.

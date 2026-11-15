@@ -16,10 +16,11 @@
 # - A shareable cloud connection to the server and database of each
 #   environment, of which the service principal is a user: each semantic
 #   model is bound to it.
-# - Nothing for the deployment state: it lives on the pyfabricops/state
-#   branch of this repository, which the first run creates, one state per
-#   environment. The job pushes to it with its own token, so it needs
-#   contents: write, and its commits say [skip ci]. Never merge that branch.
+#
+# Nothing records the deployment: each run compares the repository with the
+# workspace and sends what differs. To delete the items of the workspace
+# that the repository no longer has, add --allow-deletions to the Deploy
+# step (see deploy.py for what it never deletes).
 
 name: Deploy workspace
 
@@ -34,8 +35,8 @@ on:
       - scripts/deploy.py
   workflow_dispatch:
 
-# One deployment at a time per environment: a second run would find the
-# deployment state locked, and fail.
+# One deployment at a time per environment: a second run waits for the
+# first, as the script itself takes no lock.
 concurrency:
   group: deploy-${{ github.ref_name }}
   cancel-in-progress: false
@@ -50,15 +51,11 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ github.ref_name == 'main' && 'prd' || 'dev' }}
     permissions:
-      # The deployment state is pushed to the pyfabricops/state branch.
-      contents: write
+      contents: read
     env:
       ENVIRONMENT: ${{ github.ref_name == 'main' && 'PRD' || 'DEV' }}
     steps:
       - uses: actions/checkout@v5
-        with:
-          # The whole history: the run compares commits.
-          fetch-depth: 0
 
       - uses: actions/setup-python@v6
         with:
@@ -71,7 +68,6 @@ jobs:
         run: >
           python scripts/deploy.py
           --environment "$ENVIRONMENT"
-          --state-branch pyfabricops/state
         env:
           FAB_TENANT_ID: ${{ secrets.FAB_TENANT_ID }}
           FAB_CLIENT_ID: ${{ secrets.FAB_CLIENT_ID }}

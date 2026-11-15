@@ -9,13 +9,11 @@
 #
 # Before using it:
 # - It uses the "fabric" variable group of azure-pipelines.yml, and needs
-#   the same Pipeline permission on it. It reads the deployment state from
-#   the pyfabricops/state branch, to tell drift from a deployment still to
-#   run. It never saves the state, so the build service needs only to read
-#   the repository.
-# - To bring back what drifted instead of failing, replace --reconcile with
-#   --restore, which also binds and refreshes what it restores. Nothing is
-#   deleted either way.
+#   the same Pipeline permission on it.
+# - A difference may be drift in the workspace or a change of the branch
+#   still to deploy; to bring the workspace back instead of failing, run the
+#   deploy pipeline, which sends what differs and deletes nothing unless
+#   allowed.
 
 trigger: none
 
@@ -62,9 +60,6 @@ jobs:
         displayName: Reconcile ${{ variables.ENVIRONMENT }}
         steps:
           - checkout: self
-            # git fetches the branch of the deployment state with the token
-            # of the job.
-            persistCredentials: true
 
           - task: UsePythonVersion@0
             inputs:
@@ -77,7 +72,6 @@ jobs:
               python scripts/deploy.py
               --reconcile
               --environment $(ENVIRONMENT)
-              --state-branch pyfabricops/state
             displayName: Reconcile
             env:
               # Secret variables reach a script only when mapped.
