@@ -1453,7 +1453,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         sending = to_send(reconciliation)
-        arguments = {"start_path": str(staging)}
         results: list[Any] = []
         for item_type in managed:
             if item_type in sending:
@@ -1465,6 +1464,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 operation: Operation = (
                     pf.deploy_all_items if unchecked else pf.restore_items
                 )
+                arguments: dict[str, Any] = {"start_path": str(staging)}
+                if not unchecked:
+                    # Applied as it is, so each definition is read once.
+                    arguments["reconciliation"] = reconciliation
                 done = run_type(
                     item_type,
                     operation,
