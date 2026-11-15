@@ -32,9 +32,18 @@ Within a type, the items the others refer to are created first, such as a
 lakehouse a shortcut points to. A run stops before it sends an item that
 would still refer to dev. A type with nothing to send is skipped.
 
-An item of a type pyfabricops does not deploy, such as a mirrored
-database, whose source connection differs in each environment, is made in
-each workspace by hand, with the same name: the run sends nothing of it,
+A mirrored database is deployed with the connection to its source that
+``connections`` in the file of the environment gives in place of the one
+of dev, as is any other item that names that connection by ID, such as a
+copy activity. Its replication does not belong to its definition: each run
+starts it where it does not run, and waits for it to, before the
+lakehouses whose shortcuts point to its tables. The first run fails there
+until its managed identity is let into the source, which no Fabric API
+does; run it again after. --reconcile checks that it runs.
+
+An item of a type pyfabricops does not deploy, such as a type newer than
+the pyfabricops of the pipelines, is made in each workspace by hand, with
+the same name: the run sends nothing of it,
 and the IDs of the one in dev, such as the target of a shortcut, become
 those of the one in the target. The run stops before anything is deployed
 when the target lacks it.
@@ -170,7 +179,20 @@ WITHOUT_GIT = ("VariableLibrary", "SemanticModel", "Report")
 # What a workspace holds without a capacity, as a Pro workspace.
 ANY_WORKSPACE = ("SemanticModel", "Report")
 # What holds data, so that no run deletes it, even as an orphan.
-HOLDS_DATA = ("Lakehouse", "Warehouse", "Eventhouse", "KQLDatabase")
+HOLDS_DATA = (
+    "Lakehouse",
+    "Warehouse",
+    "Eventhouse",
+    "KQLDatabase",
+    "MirroredDatabase",
+)
+# A connection ID, or any other GUID, in the text of a definition.
+GUID = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    re.IGNORECASE,
+)
+# How long a mirrored database may take to start replicating, in seconds.
+MIRRORING_TIMEOUT = 900
 # What a deployment did to an item that sent its definition.
 SENT = ("created", "updated")
 # The refresh statuses that need no new refresh: done, or still running.
@@ -765,16 +787,156 @@ def run_type(
         done += result.results
 
 
+def all_connections() -> list[dict[str, Any]]:
+    """The connections the service principal may use."""
+    connections = pf.list_connections(df=False)
+    if connections is None:
+        raise SystemExit("Could not list the connections.")
+    return list(connections)
+
+
+def mirrors(items: Sequence[SourceItem]) -> list[SourceItem]:
+    """The mirrored databases among the items."""
+    return [item for item in items if item.item_type == "MirroredDatabase"]
+
+
+def mirror_source(mirror: SourceItem) -> dict[str, Any]:
+    """The typeProperties of the source of a mirrored database."""
+    content = json.loads(
+        (mirror.folder / "mirroring.json").read_text(encoding="utf-8-sig")
+    )
+    source = content.get("properties", {}).get("source", {})
+    return dict(source.get("typeProperties") or {})
+
+
+def map_connections(
+    staging: Path, items: Sequence[SourceItem], environment: Environment
+) -> None:
+    """
+    Put the connections of the environment in place of those of dev.
+
+    Each ID of a connection of dev that ``connections`` names, by name or
+    ID, becomes the ID of the connection of the environment, in every file
+    of the staging copy. A mirrored database also gets the database of its
+    new connection, when the connection names one. A mirrored database
+    still on a connection of dev is told: it would replicate the source of
+    dev. A name the service principal cannot see stops the run.
+    """
+    if not environment.connections and not mirrors(items):
+        return
+    known = all_connections()
+    by_name = {str(c.get("displayName")): c for c in known}
+    by_id = {str(c["id"]).lower(): c for c in known}
+
+    def find(reference: str) -> dict[str, Any] | None:
+        if GUID.fullmatch(reference):
+            return by_id.get(reference.lower(), {"id": reference})
+        return by_name.get(reference)
+
+    mapping: dict[str, dict[str, Any]] = {}
+    problems: list[str] = []
+    for old, new in environment.connections.items():
+        source, replacement = find(old), find(new)
+        for reference, found in ((old, source), (new, replacement)):
+            if found is None:
+                problems.append(
+                    f"{environment.file.name}: no connection {reference} "
+                    "that the service principal may use."
+                )
+        if source is not None and replacement is not None:
+            mapping[str(source["id"]).lower()] = replacement
+    if problems:
+        raise SystemExit("\n".join(problems))
+
+    for path in sorted(p for p in staging.rglob("*") if p.is_file()):
+        try:
+            text = path.read_text(encoding="utf-8-sig")
+        except UnicodeDecodeError:
+            continue
+        changed = GUID.sub(
+            lambda m: (
+                str(mapping[m.group(0).lower()]["id"])
+                if m.group(0).lower() in mapping
+                else m.group(0)
+            ),
+            text,
+        )
+        if changed != text:
+            path.write_text(changed, encoding="utf-8")
+    for old, new in environment.connections.items():
+        print(f"Connection {old} becomes {new}.")
+
+    targets = {str(c["id"]).lower(): c for c in mapping.values()}
+    for mirror in mirrors(items):
+        connection = str(mirror_source(mirror).get("connection", "")).lower()
+        if connection in targets:
+            path_ = str(
+                (targets[connection].get("connectionDetails") or {}).get(
+                    "path", ""
+                )
+            )
+            database = path_.split(";")[1] if ";" in path_ else ""
+            if database:
+                file = mirror.folder / "mirroring.json"
+                content = json.loads(file.read_text(encoding="utf-8-sig"))
+                content["properties"]["source"]["typeProperties"][
+                    "database"
+                ] = database
+                file.write_text(
+                    json.dumps(content, indent=2), encoding="utf-8"
+                )
+                print(f"{label(mirror.key)} replicates database {database}.")
+        else:
+            name = by_id.get(connection, {}).get("displayName", connection)
+            print(
+                f"{label(mirror.key)} keeps connection {name}, the one of "
+                f"its source in dev: give the one of {environment.name} in "
+                f"connections of {environment.file.name}."
+            )
+
+
+def mirroring_in_place(
+    workspace_id: str, items: Sequence[SourceItem], *, start: bool
+) -> bool:
+    """
+    Whether each mirrored database replicates.
+
+    With ``start``, the replication is started where it does not run, and
+    waited for. It fails while the managed identity of the database has no
+    access to the source, which is granted at the source.
+    """
+    ok = True
+    for mirror in mirrors(items):
+        try:
+            if start:
+                status = pf.start_mirroring_and_wait(
+                    workspace_id, mirror.name, timeout=MIRRORING_TIMEOUT
+                )
+            else:
+                status = pf.get_mirroring_status(workspace_id, mirror.name)
+        except (
+            pf.RequestError,
+            pf.ResourceNotFoundError,
+            TimeoutError,
+        ) as error:
+            print(
+                f"{label(mirror.key)}: {error} Let its managed identity into "
+                "the source, then run again."
+            )
+            ok = False
+            continue
+        print(f"{label(mirror.key)}: mirroring {status}.")
+        ok = ok and status == pf.MIRRORING_RUNNING
+    return ok
+
+
 def cloud_connections() -> dict[str, dict[str, Any]]:
     """
     The shareable cloud SQL connections the service principal may use, by
     their ``server;database`` path in lowercase.
     """
-    connections = pf.list_connections(df=False)
-    if connections is None:
-        raise SystemExit("Could not list the connections.")
     found: dict[str, dict[str, Any]] = {}
-    for connection in connections:
+    for connection in all_connections():
         details = connection.get("connectionDetails") or {}
         if (
             connection.get("connectivityType") == "ShareableCloud"
@@ -1088,6 +1250,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         value_set = read_value_set(environment, items)
         # Those of the file, and of the repository for the others.
         apply_parameters(items, given)
+        map_connections(staging, items, environment)
         ids = None
         if source is not None:
             print(
@@ -1129,6 +1292,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.reconcile:
             in_place = value_set_in_place(
                 target, items, value_set, change=False
+            )
+            in_place = (
+                mirroring_in_place(target, items, start=False) and in_place
             )
             ok = not reconciliation.plan.actions and not unmanaged
             return 0 if ok and in_place else 1
@@ -1176,6 +1342,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             # The value set is checked even when no library differs.
             if item_type == "VariableLibrary" and not value_set_in_place(
                 target, items, value_set, change=True
+            ):
+                return 1
+            # The lakehouses may have shortcuts to the replicated tables.
+            if item_type == "MirroredDatabase" and not mirroring_in_place(
+                target, items, start=True
             ):
                 return 1
         if args.allow_deletions and not delete_orphans(target, deleted):

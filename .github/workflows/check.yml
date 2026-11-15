@@ -31,7 +31,7 @@ jobs:
 
       - name: Install pyfabricops and the checkers
         run: >
-          pip install "pyfabricops>=0.11.0,<0.12.0" "pyyaml>=6,<7"
+          pip install "pyfabricops>=0.12.0,<0.13.0" "pyyaml>=6,<7"
           types-PyYAML ruff mypy
 
       - name: Ruff

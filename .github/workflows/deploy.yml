@@ -86,7 +86,7 @@ jobs:
           python-version: "3.13"
 
       - name: Install pyfabricops
-        run: pip install "pyfabricops>=0.11.0,<0.12.0" "pyyaml>=6,<7"
+        run: pip install "pyfabricops>=0.12.0,<0.13.0" "pyyaml>=6,<7"
 
       - name: Deploy
         run: python scripts/deploy.py --environment "$ENVIRONMENT"

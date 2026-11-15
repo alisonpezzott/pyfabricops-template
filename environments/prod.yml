@@ -14,6 +14,11 @@ valueSet: Production
 #     Server: "<server>.database.windows.net"
 #     Database: "<database>"
 
+# The connection of prod in place of each connection of dev, by name or
+# ID, such as the source of a mirrored database.
+# connections:
+#   sql-erp-dev: sql-erp-prod
+
 # The orphans --allow-deletions leaves in the workspace, as regular
 # expressions matched against the whole display name.
 # keep:

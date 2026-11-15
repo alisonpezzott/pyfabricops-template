@@ -75,16 +75,24 @@ items. Fabric Git integration ignores it, and so does the script.
 
 | dev connected to Git | No workspace connected |
 | :--- | :--- |
-| Every item type pyfabricops deploys, such as lakehouses, warehouses, eventhouses and their KQL databases, notebooks, pipelines, Direct Lake models, variable libraries, semantic models, reports, eventstreams, ontologies and data agents | Variable libraries, import or DirectQuery semantic models, and reports |
+| Every item type pyfabricops deploys, such as lakehouses, warehouses, mirrored databases, eventhouses and their KQL databases, notebooks, pipelines, Direct Lake models, variable libraries, semantic models, reports, eventstreams, ontologies and data agents | Variable libraries, import or DirectQuery semantic models, and reports |
 
-An item of a type pyfabricops does not deploy, such as a **mirrored
-database**, is not deployed: make it by hand in each workspace, with the
-same name. Its definition holds what differs in each environment, such as
-the connection to its source, and it has to be started there. The run sends
-nothing of it, but what refers to it goes pointed at the one of the target:
-a shortcut of a lakehouse to the mirrored database of dev, for example,
-becomes a shortcut to the one of prod. `--reconcile` does not count it as
-unmanaged, and no run deletes it.
+A **mirrored database** is deployed before the lakehouses, whose
+shortcuts may point to its tables, with the connection to its source that
+`connections` in the file of the environment gives in place of the one of
+dev (see [The environments](#the-environments)). Without it, the mirrored
+database of prod would replicate the source of dev, and the run says so.
+Its replication is not part of its definition: each run starts it where it
+does not run and waits for it, and `--reconcile` checks it. One thing no
+API does: the source must let the managed identity of the mirrored database
+in, such as with a database user for it in Azure SQL. The first deployment
+to an environment stops there; grant the access, and run it again.
+
+An item of a type pyfabricops does not deploy, such as a type newer than
+the pyfabricops of the pipelines, is not deployed: make it by hand in each
+workspace, with the same name. The run sends nothing of it, but what refers
+to it goes pointed at the one of the target. `--reconcile` does not count
+it as unmanaged, and no run deletes it.
 
 The script stops before it deploys anything when the repository has:
 
@@ -145,6 +153,8 @@ parameters:
     <parameter name>: "<value in prod>"
 keep:
   - "Sandbox .*"
+connections:
+  <connection of dev>: <connection of prod>
 ```
 
 | Key | What it does |
@@ -154,6 +164,7 @@ keep:
 | `gitConnected` | `true` for the environment Fabric Git integration writes. No run deploys to it, and the script reads its items to translate their IDs. |
 | `valueSet` | The value set made active in every variable library after the deployment. Every library must have it, with this exact name, and the run stops when the repository has no variable library. Without it, the libraries keep their default values, which are those of dev. |
 | `parameters` | The text parameters of each semantic model, by model and parameter name. Quote every value: YAML reads `5432` as a number and `yes` as true, and the run stops on a value that is not text. A parameter left out keeps the value of the repository, the one of dev, and the run says which; so does a parameter that is not text, such as a date, which the file cannot set. A model or parameter the repository does not have stops the run, so a misspelled name never goes unnoticed. |
+| `connections` | The connection of this environment in place of each connection of dev, both by name or ID: every ID of the one of dev in the items, such as the source of a mirrored database or the connection of a copy activity, becomes the ID of the other. A mirrored database also gets the database its new connection names. The service principal must be a user of both, or the run stops. |
 | `keep` | The names of the items `--allow-deletions` leaves in the workspace although the repository does not have them, as regular expressions matched against the whole display name, such as `"Sandbox .*"`. Escape `.`, `(` and the other special characters of a literal name. |
 
 Whether the workspace is on a capacity is not in the file: the script reads
@@ -178,7 +189,8 @@ For the environment of the branch, `scripts/deploy.py`:
 3. Stops when the staging copy has what it cannot deploy (see
    [What can go in `fabric-workspace/`](#what-can-go-in-fabric-workspace)),
    and checks the environment file: its parameters and its value set.
-4. Sets the text parameters of each model in the staging copy.
+4. Sets the text parameters of each model in the staging copy, and puts
+   the connections of `connections` in place of those of dev.
 5. With dev connected to Git, maps each ID of dev in the staging copy to the
    ID of the same item, by type and name, in the target workspace. Fabric
    lists both workspaces at every run. This covers, for example, the
@@ -204,7 +216,9 @@ For the environment of the branch, `scripts/deploy.py`:
    run stops before it sends an item that would still refer to dev.
 9. Makes the value set of the environment active in each variable library,
    and reads it back. The active value set is not part of the definition, so
-   no deployment sets it otherwise.
+   no deployment sets it otherwise. Likewise, once the mirrored databases
+   are deployed, starts the replication of each one that does not run, and
+   waits for it, before the lakehouses.
 10. With `--allow-deletions`, deletes the orphans: the items of the types
     the run manages that the workspace holds and the repository does not.
     See [Deletions](#deletions).
@@ -232,8 +246,8 @@ model. `--plan` lists what it would delete.
 
 Some orphans are never deleted, with or without the option:
 
-- **Items that hold data:** lakehouses, warehouses, eventhouses and KQL
-  databases. Delete them by hand.
+- **Items that hold data:** lakehouses, warehouses, mirrored databases,
+  eventhouses and KQL databases. Delete them by hand.
 - **Items whose name matches `keep`** in the file of the environment.
 - **Items of a type the run does not manage**, such as a dashboard, or
   without dev connected to Git, any item but a variable library, a semantic
@@ -246,7 +260,7 @@ workspace should have.
 
 ## Before you start
 
-- **pyfabricops 0.11.0 or later, and PyYAML 6.**
+- **pyfabricops 0.12.0 or later, and PyYAML 6.**
 - **A service principal**, allowed to call the Fabric and Power BI APIs by
   the tenant settings, Contributor of each workspace it deploys to, and able
   to read the items of dev when dev is connected to Git.

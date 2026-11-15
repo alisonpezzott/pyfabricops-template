@@ -4,8 +4,9 @@ The environments a repository deploys to, one YAML file each.
 Each file of ``environments`` is an environment, named after it
 (``environments/prod.yml`` is ``prod``), and says everything that tells it
 apart from the others: its workspace, the branch that deploys to it, the
-value set of its variable libraries, the parameters of its semantic models
-and the orphans a deployment leaves in place. So the pipelines hold no
+value set of its variable libraries, the parameters of its semantic
+models, the connections that replace those of dev and the orphans a
+deployment leaves in place. So the pipelines hold no
 environment of their own: they ask which environment a branch deploys to.
 
 Run as a script, it answers the pipelines without pyfabricops::
@@ -22,7 +23,7 @@ import json
 import re
 import sys
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,7 @@ KEYS = {
     "gitConnected",
     "valueSet",
     "parameters",
+    "connections",
     "keep",
 }
 # Lowercase letters, digits and "-": the same name for the file, the
@@ -62,6 +64,9 @@ class Environment:
     value_set: str | None
     # The parameter values of each semantic model, as the file gives them.
     parameters: Mapping[str, Mapping[str, str]]
+    # The connection of this environment in place of each one of dev, by
+    # name or ID, such as the source of a mirrored database.
+    connections: Mapping[str, str] = field(default_factory=dict)
     # The names of the orphans --allow-deletions leaves in the workspace.
     keep: tuple[re.Pattern[str], ...] = ()
 
@@ -151,13 +156,22 @@ def read_environment(name: str) -> Environment:
         problems += [
             f"{file.name}: {key}, but it is connected to Git, and no run "
             "deploys to it."
-            for key in ("valueSet", "parameters", "keep")
+            for key in ("valueSet", "parameters", "connections", "keep")
             if key in content
         ]
     if value_set is not None and not _text(value_set):
         problems.append(f"{file.name}: valueSet is not a name.")
     parameters, wrong = _parameters(file, content.get("parameters", {}))
     problems += wrong
+    connections = content.get("connections", {})
+    if not isinstance(connections, dict) or not all(
+        _text(k) and _text(v) for k, v in connections.items()
+    ):
+        problems.append(
+            f"{file.name}: connections is not a mapping of the connection "
+            "of dev to the one of this environment, by name or ID."
+        )
+        connections = {}
     patterns: list[re.Pattern[str]] = []
     if not isinstance(keep, list):
         problems.append(f"{file.name}: keep is not a list of names.")
@@ -177,6 +191,7 @@ def read_environment(name: str) -> Environment:
         git_connected=git_connected,
         value_set=value_set,
         parameters=parameters,
+        connections=dict(connections),
         keep=tuple(patterns),
     )
 

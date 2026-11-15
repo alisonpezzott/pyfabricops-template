@@ -107,7 +107,7 @@ stages:
                         versionSpec: "3.13"
 
                     - script: >
-                        pip install "pyfabricops>=0.11.0,<0.12.0"
+                        pip install "pyfabricops>=0.12.0,<0.13.0"
                         "pyyaml>=6,<7"
                       displayName: Install pyfabricops
 
