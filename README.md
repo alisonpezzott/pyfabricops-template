@@ -31,10 +31,7 @@ without one, and the environments may mix them.
 ├── scripts/deploy.py                 deploys, plans, reconciles
 ├── scripts/environments.py           reads environments/, tells the environment of a branch
 ├── azure-pipelines/deploy.yml        Azure DevOps: deploy when a branch of an environment changes
-├── azure-pipelines/reconcile.yml     Azure DevOps: drift report, weekdays
 ├── .github/workflows/deploy.yml      GitHub Actions: deploy when a branch of an environment changes
-├── .github/workflows/reconcile.yml   GitHub Actions: drift report, weekdays
-├── .github/workflows/check.yml       GitHub Actions: Ruff, mypy, the scripts and the environments
 ├── ruff.toml                         the Ruff settings of the scripts
 └── .env.example                      the credentials, for local runs
 ```
@@ -118,8 +115,9 @@ The script stops before it deploys anything when the repository has:
 3. Open a pull request from `develop` to `main`. Once it is merged, the
    pipeline deploys to prod.
 
-Never edit or publish to prod by hand: the next deployment overwrites it, and
-the reconcile job reports it as drift.
+Never edit or publish to prod by hand: the next deployment overwrites it.
+`python scripts/deploy.py --environment prod --reconcile` tells, at any
+time, whether prod still matches `main`.
 
 ## The environments
 
@@ -178,7 +176,7 @@ To add an environment, such as `test` from `release/*`, add
 `test` in GitHub or Azure DevOps. GitHub Actions needs nothing else; in
 Azure DevOps, add `test` to the `environments` parameter of
 `azure-pipelines/deploy.yml`, which must know its environments before it
-reads any file, and its branch to the schedule of `reconcile.yml`.
+reads any file.
 
 ## The environment connected to Git
 
@@ -356,7 +354,7 @@ deploys to nothing, and its run succeeds.
 
 | | Azure DevOps | GitHub Actions |
 | :--- | :--- | :--- |
-| Definitions | `azure-pipelines/deploy.yml`, `azure-pipelines/reconcile.yml` | `.github/workflows/deploy.yml`, `.github/workflows/reconcile.yml` |
+| Definition | `azure-pipelines/deploy.yml` | `.github/workflows/deploy.yml` |
 | Credentials | the variable group `fabric` | the secrets of the environments `dev` and `prod` |
 | Environment of a run | the first stage reads it from `environments/`; one stage per name of the `environments` parameter, and only the one of the branch runs | the first job reads it from `environments/`; the deployment job runs in it |
 | Adding an environment | its file, and its name in the `environments` parameter | its file |
@@ -364,10 +362,9 @@ deploys to nothing, and its run succeeds.
 | One run at a time | an Exclusive Lock check on each environment | `concurrency`, per environment |
 | Repository access | read only | `permissions: contents: read` |
 
-In Azure DevOps, create each pipeline from **Existing Azure Pipelines YAML
-file**, pointing at the file in `azure-pipelines/`. Allow both pipelines to
-use the variable group and the environments, or **Permit** them on the first
-run; until then, a run fails with "Variable group was not
+In Azure DevOps, create the pipeline from **Existing Azure Pipelines YAML
+file**, pointing at `azure-pipelines/deploy.yml`. Allow it to use the
+variable group and the environments, or **Permit** them on the first run; until then, a run fails with "Variable group was not
 found or is not authorized for use". In GitHub Actions, create the
 environments, with their secrets and reviewers, before the first push: a job
 creates an environment it names that does not exist, with no protection

@@ -12,14 +12,12 @@ environment of their own: they ask which environment a branch deploys to.
 Run as a script, it answers the pipelines without pyfabricops::
 
     python environments.py --branch main     # prints prod, or nothing
-    python environments.py --list            # a JSON list for a matrix
 """
 
 from __future__ import annotations
 
 import argparse
 import fnmatch
-import json
 import re
 import sys
 from collections.abc import Mapping, Sequence
@@ -45,8 +43,6 @@ KEYS = {
 # Lowercase letters, digits and "-": the same name for the file, the
 # environment of GitHub or Azure DevOps and --environment, on any system.
 NAME = re.compile(r"[a-z0-9][a-z0-9-]*")
-# What makes a branch of an environment a glob, such as release/*.
-GLOB = re.compile(r"[*?\[]")
 
 
 @dataclass(frozen=True)
@@ -255,37 +251,16 @@ def for_branch(branch: str) -> Environment | None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Answer the pipelines: the environment of a branch, or the list."""
+    """Answer the pipelines: the environment of a branch."""
     parser = argparse.ArgumentParser(
         description="Tell which environment a branch deploys to."
     )
-    mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument(
+    parser.add_argument(
         "--branch",
+        required=True,
         help="Print the environment this branch deploys to, or nothing.",
     )
-    mode.add_argument(
-        "--list",
-        action="store_true",
-        help="Print the environments a run deploys to from one branch, as a "
-        'JSON list of {"name", "branch"} for the matrix of a job: not the '
-        "one connected to Git, which no run deploys to, nor one whose branch "
-        "is a glob, which names no branch to check out.",
-    )
     args = parser.parse_args(argv)
-    if args.list:
-        print(
-            json.dumps(
-                [
-                    {"name": e.name, "branch": e.branch}
-                    for e in read_all()
-                    if e.branch is not None
-                    and not e.git_connected
-                    and not GLOB.search(e.branch)
-                ]
-            )
-        )
-        return 0
     environment = for_branch(args.branch)
     print(environment.name if environment else "")
     return 0
