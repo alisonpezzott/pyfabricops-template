@@ -35,7 +35,6 @@ what differs.
 ├── scripts/environments.py           reads environments/, tells the environment of a branch
 ├── azure-pipelines/deploy.yml        Azure DevOps: runs when a branch of an environment changes
 ├── .github/workflows/deploy.yml      GitHub Actions: runs when a branch of an environment changes
-├── ruff.toml                         the Ruff settings of the scripts
 └── .env.example                      the credentials, for local runs
 ```
 
