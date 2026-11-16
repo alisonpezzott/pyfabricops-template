@@ -3,26 +3,26 @@ Deploy the items of a Git repository to a workspace, on a Fabric capacity or
 not.
 
 The items are in ``fabric-workspace``, and each environment is a workspace:
-a push to develop deploys to DEV, and one to main to PRD, from Azure DevOps
+a push to develop deploys to dev, and one to main to prod, from Azure DevOps
 (``azure-pipelines.yml``) or GitHub Actions (``.github/workflows``). Who
 writes the repository tells what a run does:
 
 - Power BI Desktop saves a Power BI Project, which holds no ID of a
-  workspace. The repository is then the source of every environment, DEV
+  workspace. The repository is then the source of every environment, dev
   included, each on a capacity or a Pro workspace, without one, and the
-  environments may mix them, such as DEV on Pro and PRD on a capacity.
+  environments may mix them, such as dev on Pro and prod on a capacity.
   Variable libraries, semantic models and reports go.
-- Fabric Git integration writes the items of DEV, connected to
-  ``fabric-workspace``. They hold the IDs of DEV, such as the default
+- Fabric Git integration writes the items of dev, connected to
+  ``fabric-workspace``. They hold the IDs of dev, such as the default
   lakehouse of a notebook, the OneLake path of a Direct Lake model or the
   items of the same workspace in a pipeline: sent as they are, the items of
-  PRD would read and write DEV. So no run deploys to DEV, and in a staging
-  copy each ID of DEV becomes the ID of the same item, by type and name, in
+  prod would read and write dev. So no run deploys to dev, and in a staging
+  copy each ID of dev becomes the ID of the same item, by type and name, in
   the workspace to deploy to, as Fabric lists both at every run. Every item
   type of pyfabricops goes. A shortcut to an item of the same workspace gets
   the logical ID of that item in the target, since Fabric looks it up among
   the items of the workspace. The query URI of an eventhouse and the SQL
-  endpoint of DEV become those of the target too, and a data agent the
+  endpoint of dev become those of the target too, and a data agent the
   run sends is published, as its users get only what is published.
 
 The item types go one at a time, in the dependency order of pyfabricops and
@@ -30,55 +30,83 @@ pipelines last, so that an item refers by ID only to items already in the
 target, and a report bound to a model by path is sent bound to its ID there.
 Within a type, the items the others refer to are created first, such as a
 lakehouse a shortcut points to. A run stops before it sends an item that
-would still refer to DEV. A type that neither the repository nor the target
-has is skipped: its run would do nothing, but still take the lock and record
-the state.
+would still refer to dev. A type with nothing to send is skipped.
 
-Some items stop the run before anything is deployed: an item of a type
-pyfabricops does not deploy; without DEV connected to Git, any item but a
+A mirrored database is deployed with the connection to its source that
+``connections`` in the file of the environment gives in place of the one
+of dev, as is any other item that names that connection by ID, such as a
+copy activity. Its replication does not belong to its definition: each run
+starts it where it does not run, and waits for it to, before the
+lakehouses whose shortcuts point to its tables. A source database feeds
+one mirrored database only, so each environment mirrors a source of its
+own, and the run says when two environments reach the same one. The first
+run fails there until the source lets the identity of the connection in,
+which no Fabric API does; run it again after. --reconcile checks that it
+runs.
+
+An item of a type pyfabricops does not deploy, such as a type newer than
+the pyfabricops of the pipelines, is made in each workspace by hand, with
+the same name: the run sends nothing of it,
+and the IDs of the one in dev, such as the target of a shortcut, become
+those of the one in the target. The run stops before anything is deployed
+when the target lacks it.
+
+Some items stop the run before anything is deployed: without dev connected
+to Git, any item but a
 variable library, a semantic model or a report, and a Direct Lake model,
 whose source is a Fabric item by ID; for a Pro workspace, which holds
 semantic models and reports only, any other item; and a model saved as
 model.bim, whose parameters the script does not read.
 
-Each environment is a JSON file of ``environments``, named after it
-(--environment PRD reads ``environments/PRD.json``), which gives its
-workspace, the value set of its variable libraries and the parameters of
-each semantic model there::
+Each environment is a YAML file of ``environments``, named after it
+(--environment prod reads ``environments/prod.yml``), which gives its
+workspace, the branch that deploys to it, the value set of its variable
+libraries and the parameters of each semantic model there (see
+``environments.py``)::
 
-    {
-      "workspace": "<workspace>",
-      "valueSet": "<value set>",
-      "parameters": {
-        "Main": {"Server": "<server>.database.windows.net", "Database": "<db>"}
-      }
-    }
+    workspace: <workspace>
+    branch: main
+    valueSet: <value set>
+    parameters:
+      Main:
+        Server: "<server>.database.windows.net"
+        Database: "<db>"
 
-The file of the environment connected to Git gives ``"gitConnected": true``
-and its workspace only; one environment at most is. So what tells the
-environments apart is in Git, reviewed like the items, and the pipelines
-only pick the environment of their branch. --workspace overrides the
-workspace of the file, for a local run.
+The file of the environment connected to Git gives ``gitConnected: true``,
+its workspace and its branch only; one environment at most is. No item is
+deployed to it through the API: a run of its branch updates its workspace
+from Git, as Update in Source control does, so that what reaches the
+branch from outside the workspace, such as a merged pull request, gets
+there. A workspace on the commit of the branch is left alone, and one with
+changes not committed yet is not updated, as that would discard them: the
+run fails and names them. --plan tells what an update would do, and
+--reconcile fails when the workspace is not on the commit of the branch.
+The service principal needs Git credentials of its own on the workspace.
+
+So what
+tells the environments apart is in Git, reviewed like the items, and the
+pipelines only pass their branch: --branch main deploys to the environment
+whose branch is main. --workspace overrides the workspace of the file, for
+a local run.
 
 A variable library is sent as it is: its value sets hold what differs
 between environments, for the items that read it. The value set of the
 environment, which every library must have, is made active in each once it
 is deployed, and read back: the active value set is no part of the
-definition, so no deployment sets it. --reconcile checks it, and --restore
-makes it active again. An environment without one keeps the default values:
-a library starts on them, and the script leaves its active value set alone,
-as the Fabric API documents no way back to them.
+definition, so no deployment sets it; each run makes it active again
+where it is not, and --reconcile checks it. An environment without one
+keeps the default values: a library starts on them, and the script leaves
+its active value set alone, as the Fabric API documents no way back to
+them.
 
-The repository keeps the parameter values DEV opens with. In the staging
+The repository keeps the parameter values dev opens with. In the staging
 copy, which leaves out what Git ignores, such as the data cache of Power BI
 Desktop, and the diagram layout of each model, which the service does not
 keep, the text parameters of each semantic model get the values the file of
 the environment gives. A parameter it does not give keeps the value of the
-repository, such as the database of DEV, and the run says which; a model or
+repository, such as the database of dev, and the run says which; a model or
 a parameter the repository does not have stops the run, as a misspelled
-name would leave that value unnoticed. The repository is never changed. A
-model whose parameters in the workspace differ from those it is deployed
-with is deployed again, even when Git did not change it.
+name would leave that value unnoticed. The repository is never changed.
 
 A semantic model carries no credentials, and an import model arrives empty.
 So each import model deployed, or never refreshed, or whose last refresh
@@ -90,21 +118,31 @@ both. A workspace without a capacity refreshes a model at most eight times a
 day; --no-refresh only binds. A Direct Lake model is left alone: it reads
 the tables of its source as they are loaded.
 
-With a deployment state, on a branch of this repository (--state-branch),
-in a lakehouse (--state-workspace and --state-lakehouse) or in a folder
-(--state-dir), a run deploys only what changed in Git since the last
-successful one, and holds a lock, so that two runs never deploy at a time.
+The workspace is its own deployment state: nothing records what a run
+sent. Each run compares the staging copy with the definitions the target
+returns, and sends only the items it lacks or that differ, whether Git
+changed them or someone changed them in the workspace, a model whose
+parameters differ included. A run that failed leaves nothing to resume: the
+next one sends what still differs. An item whose definition Fabric does not
+return cannot be compared, so every item of its type is sent. Two runs to
+one environment are kept apart by the pipeline, not by the script.
 
-Instead of deploying, --plan prints the plan; --reconcile reports how the
-target stands against the repository, its parameters and active value sets
-included, and changes nothing; --restore brings back what drifted there,
-makes the value set active again, binds and refreshes the models it
-restored, and deletes nothing.
+An item the target holds and the repository does not, an orphan, is only
+reported, unless --allow-deletions is given. It then deletes the orphans of
+the types the run manages, once every item is deployed, but never a
+lakehouse, a warehouse, an eventhouse or a KQL database, which hold data,
+nor an item whose name matches a pattern of ``keep`` in the file of the
+environment. A workspace deployed this way is written by this script alone.
+
+Instead of deploying, --plan prints what a run would send and delete;
+--reconcile reports how the target stands against the repository, its
+active value sets included, changes nothing, and exits with 1 when anything
+differs.
 
 Usage::
 
-    python deploy.py --environment <env> [--plan | --reconcile | --restore]
-    python deploy.py --environment <env> --state-branch pyfabricops/state
+    python deploy.py --environment <env> [--plan | --reconcile]
+    python deploy.py --environment <env> --allow-deletions
 """
 
 from __future__ import annotations
@@ -126,28 +164,48 @@ from typing import Any
 import pyfabricops as pf  # type: ignore[import-untyped]
 from dotenv import load_dotenv
 
+from environments import (
+    Environment,
+    for_branch,
+    git_environment,
+    read_environment,
+)
+
 ItemKey = tuple[str, str]
 # The parameters of each semantic model, by model and parameter name.
 Parameters = dict[str, dict[str, str]]
-# deploy_all_items or restore_items: what a run does to the items of a type.
+# restore_items or deploy_all_items: what a run does to the items of a type.
 Operation = Callable[..., Any]
 
 # The root of the repository, one folder above this script.
 ROOT = Path(__file__).resolve().parents[1]
-# The items of the repository: a Power BI Project, or the Git folder of DEV.
+# The items of the repository: a Power BI Project, or the Git folder of dev.
 SOURCE = ROOT / "fabric-workspace"
-# The JSON file of each environment: its workspace, value set and parameters.
-ENVIRONMENTS = ROOT / "environments"
 # What the script deploys, in the dependency order of pyfabricops. A pipeline
 # refers to what it runs by ID, so pipelines go last.
 ITEM_TYPES = [t for t in pf.DEPLOY_ORDER if t != "DataPipeline"] + [
     "DataPipeline"
 ]
-# What goes without DEV connected to Git: as Power BI Desktop saves them, or
+# What goes without dev connected to Git: as Power BI Desktop saves them, or
 # as the values of a variable library, they hold no ID of a workspace.
 WITHOUT_GIT = ("VariableLibrary", "SemanticModel", "Report")
 # What a workspace holds without a capacity, as a Pro workspace.
 ANY_WORKSPACE = ("SemanticModel", "Report")
+# What holds data, so that no run deletes it, even as an orphan.
+HOLDS_DATA = (
+    "Lakehouse",
+    "Warehouse",
+    "Eventhouse",
+    "KQLDatabase",
+    "MirroredDatabase",
+)
+# A connection ID, or any other GUID, in the text of a definition.
+GUID = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    re.IGNORECASE,
+)
+# How long a mirrored database may take to start replicating, in seconds.
+MIRRORING_TIMEOUT = 900
 # What a deployment did to an item that sent its definition.
 SENT = ("created", "updated")
 # The refresh statuses that need no new refresh: done, or still running.
@@ -238,22 +296,38 @@ def direct_lake(model: SourceItem) -> bool:
     )
 
 
-def unsupported(items: Sequence[SourceItem], *, translated: bool) -> list[str]:
+def by_hand(items: Sequence[SourceItem]) -> list[SourceItem]:
+    """The items of a type the script does not deploy, made by hand."""
+    return [item for item in items if item.item_type not in ITEM_TYPES]
+
+
+def unsupported(
+    items: Sequence[SourceItem],
+    *,
+    translated: bool,
+    target: Mapping[ItemKey, Any],
+    environment: str,
+) -> list[str]:
     """
     What among the staged items the script cannot deploy as it should.
 
-    An item of a type it does not deploy, and a model saved as model.bim,
-    whose parameters would keep the values of DEV. Unless the IDs of DEV are
-    translated, also any item but a variable library, a semantic model or a
-    report, and a Direct Lake model, which would still refer to DEV.
+    An item of a type it does not deploy that the target lacks, as the
+    items referring to it would point nowhere, and a model saved as
+    model.bim, whose parameters would keep the values of dev. Unless the
+    IDs of dev are translated, also any item but a variable library, a
+    semantic model or a report, and a Direct Lake model, which would still
+    refer to dev. target is the listing of the target workspace.
     """
-    problems: list[str] = []
+    problems = [
+        f"{label(item.key)}: deploy.py deploys no {item.item_type}; make it "
+        f"in {environment} by hand, with the same name."
+        for item in by_hand(items)
+        if item.key not in target
+    ]
     for item in items:
         if item.item_type not in ITEM_TYPES:
-            problems.append(
-                f"{label(item.key)}: deploy.py deploys no {item.item_type}."
-            )
-        elif not translated and item.item_type not in WITHOUT_GIT:
+            continue
+        if not translated and item.item_type not in WITHOUT_GIT:
             problems.append(
                 f"{label(item.key)}: deploy.py deploys a {item.item_type} "
                 "only with an environment connected to Git, whose IDs it "
@@ -337,7 +411,7 @@ class Expressions:
     A parameter is an expression whose value has the meta record
     ``IsParameterQuery = true``, inline or inside a ``let``, as Power BI
     Desktop writes either. A parameter whose value is not text, such as a
-    date or a number, cannot be told by a JSON string: it keeps the value
+    date or a number, cannot be told by a text value: it keeps the value
     of the repository, and the file of an environment that gives it one
     stops the run.
 
@@ -404,81 +478,6 @@ class Expressions:
         self.path.write_bytes(self.text.encode("utf-8"))
 
 
-@dataclass(frozen=True)
-class Environment:
-    """An environment, as its file in ``environments`` describes it."""
-
-    name: str
-    file: Path
-    workspace: str
-    # Whether its workspace is connected to Git, whose IDs the items hold.
-    git_connected: bool
-    # The value set made active in each variable library, if any.
-    value_set: str | None
-    # The parameter values of each semantic model, as the file gives them.
-    parameters: Mapping[str, Any]
-
-
-def read_environment(name: str) -> Environment:
-    """The environment of a name; exits when its file is missing or wrong."""
-    file = ENVIRONMENTS / f"{name}.json"
-    if not file.is_file():
-        known = ", ".join(sorted(p.stem for p in ENVIRONMENTS.glob("*.json")))
-        raise SystemExit(
-            f"No environment {name}: {file} is missing. Known: {known}."
-        )
-    content = json.loads(file.read_text(encoding="utf-8-sig"))
-    workspace = content.get("workspace")
-    git_connected = content.get("gitConnected", False)
-    value_set = content.get("valueSet")
-    parameters = content.get("parameters", {})
-    keys = {"workspace", "gitConnected", "valueSet", "parameters"}
-    problems = [
-        f"{file.name}: unknown key {key}."
-        for key in sorted(set(content) - keys)
-    ]
-    if not isinstance(workspace, str) or not workspace:
-        problems.append(f"{file.name}: no workspace.")
-    if not isinstance(git_connected, bool):
-        problems.append(f"{file.name}: gitConnected is not true or false.")
-    elif git_connected:
-        problems += [
-            f"{file.name}: {key}, but it is connected to Git, and no run "
-            "deploys to it."
-            for key in ("valueSet", "parameters")
-            if key in content
-        ]
-    if value_set is not None and (
-        not isinstance(value_set, str) or not value_set
-    ):
-        problems.append(f"{file.name}: valueSet is not a name.")
-    if not isinstance(parameters, dict):
-        problems.append(f"{file.name}: parameters is not an object.")
-    if problems:
-        raise SystemExit("\n".join(problems))
-    return Environment(
-        name, file, str(workspace), git_connected, value_set, parameters
-    )
-
-
-def git_environment() -> Environment | None:
-    """The environment connected to Git, whose IDs the items hold, if any."""
-    connected = [
-        environment
-        for environment in (
-            read_environment(path.stem)
-            for path in sorted(ENVIRONMENTS.glob("*.json"))
-        )
-        if environment.git_connected
-    ]
-    if len(connected) > 1:
-        names = ", ".join(environment.name for environment in connected)
-        raise SystemExit(
-            f"One environment at most is connected to Git, not {names}."
-        )
-    return connected[0] if connected else None
-
-
 def read_parameters(
     environment: Environment, items: Sequence[SourceItem]
 ) -> Parameters:
@@ -486,10 +485,10 @@ def read_parameters(
     The parameters the file of the environment gives each semantic model.
 
     A parameter it does not give keeps the value of the repository, the one
-    DEV opens with. A model or a parameter the repository does not have
+    dev opens with. A model or a parameter the repository does not have
     stops the run, as a misspelled name would leave that value unnoticed,
     and so does a value for a parameter that is not text, such as a date,
-    which a JSON string cannot set.
+    which the file cannot set.
     """
     file = environment.file
     given = environment.parameters
@@ -580,31 +579,66 @@ def apply_parameters(
     return deployed
 
 
-def stale_models(
-    workspace_id: str, items: Sequence[SourceItem], parameters: Parameters
-) -> list[SourceItem]:
-    """The models of the workspace whose parameters differ from those given."""
+def to_send(reconciliation: Any) -> set[str]:
+    """
+    The item types a run sends: those with an item the target lacks, one
+    that differs, or one whose definition could not be compared.
+    """
+    types = {action.item_type for action in reconciliation.plan.actions}
+    return types | {item_type for item_type, _ in reconciliation.unchecked}
+
+
+def orphans(
+    reconciliation: Any, managed: Sequence[str], environment: Environment
+) -> tuple[list[ItemKey], list[ItemKey]]:
+    """
+    The items the target holds and the repository does not, of the types
+    the run manages: those --allow-deletions deletes, and those it keeps,
+    as they hold data or the environment keeps their name. The items to
+    delete go in the reverse of the deployment order, so that an item goes
+    before what it refers to, as a report before its model.
+    """
+    found = [
+        (item.item_type, item.display_name)
+        for item in reconciliation.unmanaged
+        if item.item_type in managed
+    ]
+    kept = [
+        key
+        for key in found
+        if key[0] in HOLDS_DATA or environment.keeps(key[1])
+    ]
+    order = {item_type: n for n, item_type in enumerate(ITEM_TYPES)}
+    deleted = sorted(
+        (key for key in found if key not in kept),
+        key=lambda key: (-order[key[0]], key[1]),
+    )
+    return deleted, kept
+
+
+def delete_orphans(workspace_id: str, orphaned: Sequence[ItemKey]) -> bool:
+    """
+    Delete items from the workspace; True when all were deleted.
+
+    Each is deleted by its ID, as a report and its model may share a name.
+    """
     target = list_workspace(workspace_id)
-    stale: list[SourceItem] = []
-    for model in models(items):
-        existing = target.get(model.key)
+    ok = True
+    for key in orphaned:
+        existing = target.get(key)
         if existing is None:
             continue
-        result = power_bi(
-            f"/groups/{workspace_id}/datasets/{existing['id']}/parameters"
+        result = pf.api_request(
+            f"/workspaces/{workspace_id}/items/{existing['id']}",
+            method="delete",
+            return_result=True,
         )
-        if not result.success:
-            raise SystemExit(
-                f"{label(model.key)}: could not read its parameters: "
-                f"{result.error}"
-            )
-        current = {
-            str(p["name"]): str(p.get("currentValue"))
-            for p in (result.data or {}).get("value", [])
-        }
-        if any(current.get(k) != v for k, v in parameters[model.name].items()):
-            stale.append(model)
-    return stale
+        if result.success:
+            print(f"{label(key)}: deleted.")
+        else:
+            print(f"{label(key)}: could not delete it: {result.error}")
+            ok = False
+    return ok
 
 
 def drop_local_files(
@@ -694,14 +728,13 @@ def run_type(
     sources: Sequence[SourceItem],
 ) -> list[Any] | None:
     """
-    Deploy or restore the items of a type: what was done to each, or None
-    when an item failed.
+    Send the items of a type: what was done to each, or None when an item
+    failed.
 
-    With the IDs of DEV to translate, the items the others refer to by ID
-    are created first, in runs of their own and without the state, which
-    the run of the whole type reads and, for a deployment, records. ids is
-    the pf.WorkspaceIdMap from DEV to the target, and sources the items of
-    the repository.
+    With the IDs of dev to translate, the items the others refer to by ID
+    are created first, in runs of their own, before the run of the whole
+    type. ids is the pf.WorkspaceIdMap from dev to the target, and sources
+    the items of the repository.
     """
     run = {**arguments, "item_types": [item_type]}
     if ids is None:
@@ -767,16 +800,280 @@ def run_type(
         done += result.results
 
 
+def all_connections() -> list[dict[str, Any]]:
+    """The connections the service principal may use."""
+    connections = pf.list_connections(df=False)
+    if connections is None:
+        raise SystemExit("Could not list the connections.")
+    return list(connections)
+
+
+def mirrors(items: Sequence[SourceItem]) -> list[SourceItem]:
+    """The mirrored databases among the items."""
+    return [item for item in items if item.item_type == "MirroredDatabase"]
+
+
+def mirror_source(mirror: SourceItem) -> dict[str, Any]:
+    """The typeProperties of the source of a mirrored database."""
+    content = json.loads(
+        (mirror.folder / "mirroring.json").read_text(encoding="utf-8-sig")
+    )
+    source = content.get("properties", {}).get("source", {})
+    return dict(source.get("typeProperties") or {})
+
+
+def map_connections(
+    staging: Path, items: Sequence[SourceItem], environment: Environment
+) -> None:
+    """
+    Put the connections of the environment in place of those of dev.
+
+    Each ID of a connection of dev that ``connections`` names, by name or
+    ID, becomes the ID of the connection of the environment, in every file
+    of the staging copy. A mirrored database also gets the database of its
+    new connection, when the connection names one. A mirrored database
+    still on a connection of dev is told: it would replicate the source of
+    dev. A name the service principal cannot see stops the run.
+    """
+    if not environment.connections and not mirrors(items):
+        return
+    known = all_connections()
+    by_name = {str(c.get("displayName")): c for c in known}
+    by_id = {str(c["id"]).lower(): c for c in known}
+
+    def find(reference: str) -> dict[str, Any] | None:
+        if GUID.fullmatch(reference):
+            return by_id.get(reference.lower(), {"id": reference})
+        return by_name.get(reference)
+
+    mapping: dict[str, dict[str, Any]] = {}
+    problems: list[str] = []
+    for old, new in environment.connections.items():
+        source, replacement = find(old), find(new)
+        for reference, found in ((old, source), (new, replacement)):
+            if found is None:
+                problems.append(
+                    f"{environment.file.name}: no connection {reference} "
+                    "that the service principal may use."
+                )
+        if source is not None and replacement is not None:
+            mapping[str(source["id"]).lower()] = replacement
+    if problems:
+        raise SystemExit("\n".join(problems))
+
+    for path in sorted(p for p in staging.rglob("*") if p.is_file()):
+        try:
+            text = path.read_text(encoding="utf-8-sig")
+        except UnicodeDecodeError:
+            continue
+        changed = GUID.sub(
+            lambda m: (
+                str(mapping[m.group(0).lower()]["id"])
+                if m.group(0).lower() in mapping
+                else m.group(0)
+            ),
+            text,
+        )
+        if changed != text:
+            path.write_text(changed, encoding="utf-8")
+    for old, new in environment.connections.items():
+        print(f"Connection {old} becomes {new}.")
+
+    targets = {str(c["id"]).lower(): c for c in mapping.values()}
+    # The connection of dev each connection of the environment replaces.
+    replaced = {str(new["id"]).lower(): old for old, new in mapping.items()}
+    shared = (
+        "a database feeds one mirrored database only, so give "
+        f"{environment.name} a database and a connection of its own"
+    )
+    for mirror in mirrors(items):
+        connection = str(mirror_source(mirror).get("connection", "")).lower()
+        if connection in targets:
+            path_ = connection_path(targets[connection])
+            database = path_.split(";")[1] if ";" in path_ else ""
+            before = connection_path(by_id.get(replaced[connection], {}))
+            if path_ and path_.lower() == before.lower():
+                print(
+                    f"{label(mirror.key)}: the connection of "
+                    f"{environment.name} reaches {path_}, as the one of dev "
+                    f"does; {shared}."
+                )
+            if not database:
+                print(
+                    f"{label(mirror.key)}: the service principal cannot read "
+                    "the database of its new connection, so it keeps "
+                    f"database {mirror_source(mirror).get('database')}: make "
+                    "it a user of the connection, or give the connection by "
+                    "name."
+                )
+            else:
+                file = mirror.folder / "mirroring.json"
+                content = json.loads(file.read_text(encoding="utf-8-sig"))
+                content["properties"]["source"]["typeProperties"][
+                    "database"
+                ] = database
+                file.write_text(
+                    json.dumps(content, indent=2), encoding="utf-8"
+                )
+                print(f"{label(mirror.key)} replicates database {database}.")
+        else:
+            name = by_id.get(connection, {}).get("displayName", connection)
+            print(
+                f"{label(mirror.key)} keeps connection {name}, the one of "
+                f"its source in dev, and would replicate it too; {shared}, in "
+                f"connections of {environment.file.name}."
+            )
+
+
+def connection_path(connection: Mapping[str, Any]) -> str:
+    """The ``server;database`` path of a connection, or empty."""
+    details = connection.get("connectionDetails") or {}
+    return str(details.get("path") or "")
+
+
+def mirroring_in_place(
+    workspace_id: str, items: Sequence[SourceItem], *, start: bool
+) -> bool:
+    """
+    Whether each mirrored database replicates.
+
+    With ``start``, the replication is started where it does not run, and
+    waited for. It fails while the source refuses the replication, such as
+    when the identity of its connection has no access there, which is
+    granted at the source.
+    """
+    ok = True
+    for mirror in mirrors(items):
+        try:
+            if start:
+                print(
+                    f"{label(mirror.key)}: checking that its mirroring "
+                    "runs, and starting it if not, waiting up to "
+                    f"{MIRRORING_TIMEOUT // 60} minutes..."
+                )
+                status = pf.start_mirroring_and_wait(
+                    workspace_id, mirror.name, timeout=MIRRORING_TIMEOUT
+                )
+            else:
+                status = pf.get_mirroring_status(workspace_id, mirror.name)
+        except (
+            pf.RequestError,
+            pf.ResourceNotFoundError,
+            TimeoutError,
+        ) as error:
+            print(
+                f"{label(mirror.key)}: {error} Fix what the error on the "
+                "mirrored database in Fabric tells, at its connection or its "
+                "source, then run again."
+            )
+            ok = False
+            continue
+        print(f"{label(mirror.key)}: mirroring {status}.")
+        ok = ok and status == pf.MIRRORING_RUNNING
+    return ok
+
+
+def git_changes(status: Mapping[str, Any]) -> tuple[list[str], list[str]]:
+    """
+    The items a Git status says changed: those changed in the workspace
+    and not committed yet, and those changed in Git and not in the
+    workspace yet.
+    """
+    local: list[str] = []
+    remote: list[str] = []
+    for change in status.get("changes") or []:
+        metadata = change.get("itemMetadata") or {}
+        identifier = metadata.get("itemIdentifier") or {}
+        name = (
+            f"{metadata.get('displayName') or identifier.get('logicalId')}."
+            f"{metadata.get('itemType')}"
+        )
+        if change.get("workspaceChange"):
+            local.append(f"{name} ({change['workspaceChange']})")
+        if change.get("remoteChange"):
+            remote.append(f"{name} ({change['remoteChange']})")
+    return local, remote
+
+
+def update_from_git(
+    workspace_id: str, environment: str, *, apply: bool, strict: bool
+) -> int:
+    """
+    Bring the workspace connected to Git to the commit of its branch.
+
+    Nothing is sent when it is on that commit already, as when the commit
+    came from the workspace itself. A workspace with changes not committed
+    yet is not updated, since the update would discard them. Without
+    ``apply``, it only tells what an update would do.
+
+    Returns:
+        int: 0 when the workspace is, or was brought, on the commit of its
+            branch, and without ``strict`` whatever it found; 1 otherwise.
+    """
+    result = pf.api_request(
+        f"/workspaces/{workspace_id}/git/status",
+        support_lro=True,
+        return_result=True,
+    )
+    if not result.success:
+        print(
+            f"{environment}: could not read its Git status: {result.error}. "
+            "The service principal needs Git credentials of its own on the "
+            "workspace (see the README)."
+        )
+        return 1
+    status = result.data or {}
+    remote = status.get("remoteCommitHash")
+    head = status.get("workspaceHead")
+    local, incoming = git_changes(status)
+    print(
+        f"{environment} is connected to Git: its workspace is on commit "
+        f"{str(head or 'none')[:12]}, its branch on {str(remote)[:12]}."
+    )
+    if local:
+        print(
+            f"{environment} has changes not committed to Git, which an "
+            "update would discard; commit or undo them in Source control:"
+        )
+        print("\n".join(f"  {name}" for name in local))
+        return 1 if strict else 0
+    if remote and remote == head:
+        print(f"{environment} is up to date with its branch.")
+        return 0
+    print(f"An update from Git brings {len(incoming)} item(s):")
+    print("\n".join(f"  {name}" for name in incoming))
+    if not apply:
+        return 1 if strict else 0
+    updated = pf.api_request(
+        f"/workspaces/{workspace_id}/git/updateFromGit",
+        method="post",
+        payload={
+            "remoteCommitHash": remote,
+            "workspaceHead": head,
+            # Nothing changed in the workspace, so nothing of it is lost.
+            "conflictResolution": {
+                "conflictResolutionType": "Workspace",
+                "conflictResolutionPolicy": "PreferRemote",
+            },
+            "options": {"allowOverrideItems": True},
+        },
+        support_lro=True,
+        return_result=True,
+    )
+    if not updated.success:
+        print(f"{environment}: the update from Git failed: {updated.error}")
+        return 1
+    print(f"{environment} is updated to commit {str(remote)[:12]}.")
+    return 0
+
+
 def cloud_connections() -> dict[str, dict[str, Any]]:
     """
     The shareable cloud SQL connections the service principal may use, by
     their ``server;database`` path in lowercase.
     """
-    connections = pf.list_connections(df=False)
-    if connections is None:
-        raise SystemExit("Could not list the connections.")
     found: dict[str, dict[str, Any]] = {}
-    for connection in connections:
+    for connection in all_connections():
         details = connection.get("connectionDetails") or {}
         if (
             connection.get("connectivityType") == "ShareableCloud"
@@ -962,32 +1259,23 @@ def value_set_in_place(
     return ok
 
 
-def state_backend(args: argparse.Namespace) -> Any:
-    """The state on a branch, in a lakehouse or in a folder, if one is given."""
-    if args.state_branch:
-        # The repository of the items, whose remote keeps the branch.
-        return pf.GitStateBackend(str(args.source), args.state_branch)
-    if args.state_lakehouse:
-        return pf.OneLakeStateBackend(
-            args.state_workspace, args.state_lakehouse
-        )
-    if args.state_dir:
-        return pf.LocalJsonStateBackend(str(args.state_dir))
-    return None
-
-
 def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     """Read the command line."""
     parser = argparse.ArgumentParser(
         description="Deploy the items of a Git repository to a workspace, on "
         "a Fabric capacity or not."
     )
-    parser.add_argument(
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument(
         "--environment",
-        required=True,
-        help="The environment to deploy to, such as PRD: the file of the "
-        "environments folder of that name gives its workspace, value set and "
-        "parameters, and the deployment state is kept under it.",
+        help="The environment to deploy to, such as prod: the file of the "
+        "environments folder of that name gives its workspace, value set, "
+        "parameters and the orphans it keeps.",
+    )
+    target.add_argument(
+        "--branch",
+        help="Deploy to the environment this branch deploys to, by the "
+        "branch key of its file, such as main or refs/heads/main.",
     )
     parser.add_argument(
         "--workspace",
@@ -1002,28 +1290,11 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         "fabric-workspace folder next to this script",
     )
     parser.add_argument(
-        "--state-branch",
-        help="The branch of this repository that keeps the state, such as "
-        "pyfabricops/state. The first deployment creates it; each run "
-        "pushes to it.",
-    )
-    parser.add_argument(
-        "--state-workspace",
-        help="The workspace, by name or ID, of the lakehouse of the state.",
-    )
-    parser.add_argument(
-        "--state-lakehouse",
-        help="The lakehouse, by name or ID, that keeps the state.",
-    )
-    parser.add_argument(
-        "--state-dir",
-        type=Path,
-        help="The folder of the state, for a local run.",
-    )
-    parser.add_argument(
         "--allow-deletions",
         action="store_true",
-        help="Delete from the workspace the items deleted in Git.",
+        help="Delete from the workspace the items the repository does not "
+        "have, of the types the run manages, but those that hold data and "
+        "those the environment keeps.",
     )
     parser.add_argument(
         "--no-refresh",
@@ -1042,7 +1313,7 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     mode.add_argument(
         "--plan",
         action="store_true",
-        help="Print the plan, and change nothing.",
+        help="Print what a run would send and delete, and change nothing.",
     )
     mode.add_argument(
         "--reconcile",
@@ -1050,24 +1321,11 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         help="Report how the target stands against the repository, and "
         "change nothing.",
     )
-    mode.add_argument(
-        "--restore",
-        action="store_true",
-        help="Bring back what drifted in the target, and delete nothing.",
-    )
-    args = parser.parse_args(argv)
-    if bool(args.state_workspace) != bool(args.state_lakehouse):
-        parser.error("--state-workspace and --state-lakehouse go together")
-    stores = (args.state_branch, args.state_lakehouse, args.state_dir)
-    if sum(bool(store) for store in stores) > 1:
-        parser.error(
-            "give one of --state-branch, --state-lakehouse or --state-dir"
-        )
-    return args
+    return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Deploy, plan, reconcile or restore; 0 when all went well."""
+    """Deploy, plan or reconcile; 0 when all went well."""
     args = parse_args(argv)
     # A pipeline gives no terminal, and Python would hold the output back
     # until the end; each line goes out as it is written instead.
@@ -1079,13 +1337,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     load_dotenv()
     pf.set_auth_provider("env")
-    environment = read_environment(args.environment)
+    if args.branch:
+        matched = for_branch(args.branch)
+        if matched is None:
+            raise SystemExit(f"No environment has branch {args.branch}.")
+        environment = matched
+    else:
+        environment = read_environment(args.environment)
     if environment.git_connected:
-        print(
-            f"{environment.name} is connected to Git: it writes the "
-            "repository, and no run deploys to it."
+        workspace = require_workspace(args.workspace or environment.workspace)
+        return update_from_git(
+            workspace,
+            environment.name,
+            apply=not (args.plan or args.reconcile),
+            strict=not args.plan,
         )
-        return 0
     connected = git_environment()
     print(f"Reading the workspace of {environment.name}...")
     target = require_workspace(args.workspace or environment.workspace)
@@ -1105,14 +1371,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         items = read_items(staging)
         print(f"{len(items)} item(s) in the repository.")
         drop_local_files(args.source, staging, items)
-        problems = unsupported(items, translated=source is not None)
+        problems = unsupported(
+            items,
+            translated=source is not None,
+            target=list_workspace(target),
+            environment=environment.name,
+        )
         problems += without_capacity(target, items)
         if problems:
             raise SystemExit("\n".join(problems))
+        for item in by_hand(items):
+            print(
+                f"{label(item.key)}: not deployed; the one made by hand in "
+                f"{environment.name} is used."
+            )
         given = read_parameters(environment, items)
         value_set = read_value_set(environment, items)
         # Those of the file, and of the repository for the others.
-        parameters = apply_parameters(items, given)
+        apply_parameters(items, given)
+        map_connections(staging, items, environment)
         ids = None
         if source is not None:
             print(
@@ -1122,109 +1399,104 @@ def main(argv: Sequence[str] | None = None) -> int:
             ids = pf.WorkspaceIdMap.load(source, target, staging)
             ids.translate(staging)
         # The types a run manages: those that hold no ID of a workspace,
-        # unless the IDs of DEV are translated.
+        # unless the IDs of dev are translated.
         managed = [
             t for t in ITEM_TYPES if ids is not None or t in WITHOUT_GIT
         ]
-        state: dict[str, Any] = {
-            "start_path": str(staging),
-            "state_backend": state_backend(args),
-            "environment": environment.name,
-        }
+        # The workspace is the state: what differs from it is what to send.
+        print(
+            f"Comparing {len(items)} item(s) with {environment.name}: Fabric "
+            "returns the definition of each one, which takes a while..."
+        )
+        reconciliation = pf.reconcile_items(
+            target, str(staging), str(staging), item_types=managed
+        )
+        # pyfabricops reads the items made by hand as unmanaged, though
+        # the repository has them: no line, and no difference, for them.
+        made = {f"UNMANAGED {i.name}.{i.item_type}:" for i in by_hand(items)}
+        keys = {item.key for item in items}
+        unmanaged = [
+            u
+            for u in reconciliation.unmanaged
+            if (u.item_type, u.display_name) not in keys
+        ]
+        print("== Reconciliation")
+        print(
+            "\n".join(
+                line
+                for line in reconciliation.describe().splitlines()
+                if not line.startswith(tuple(made))
+            )
+        )
+        deleted, kept = orphans(reconciliation, managed, environment)
+        for key in kept:
+            print(f"{label(key)}: an orphan this script never deletes.")
 
         if args.reconcile:
-            reconciliation = pf.reconcile_items(
-                target, str(staging), item_types=managed, **state
-            )
-            print(reconciliation.describe())
-            stale = stale_models(target, items, parameters)
-            for model in stale:
-                print(
-                    f"{label(model.key)}: its parameters differ from "
-                    f"{environment.file.name} and the repository."
-                )
             in_place = value_set_in_place(
                 target, items, value_set, change=False
             )
-            return 0 if reconciliation.ok and not stale and in_place else 1
-
-        arguments = state
-        operation: Operation = pf.restore_items
-        stale = []
-        if not args.restore:
-            arguments = {
-                **state,
-                # The items in Git, which the staging copy came from.
-                "repository_path": str(args.source),
-                "allow_deletions": args.allow_deletions,
-            }
-            operation = pf.deploy_all_items
-            print("== Plan")
-            plan = pf.plan_all_items(
-                target, str(staging), item_types=managed, **arguments
+            in_place = (
+                mirroring_in_place(target, items, start=False) and in_place
             )
-            print(plan.describe())
-            for item in items:
-                found = (
-                    ids.references(item.key, item.folder).missing
-                    if ids is not None
-                    else set()
-                )
-                if found:
-                    names = ", ".join(map(label, sorted(found)))
-                    print(
-                        f"{label(item.key)} refers to {names}, not there yet."
-                    )
-            # Git did not change these, so the plan leaves them out.
-            stale = stale_models(target, items, parameters)
-            for model in stale:
-                print(
-                    f"{label(model.key)}: its parameters in the workspace "
-                    f"differ from {environment.file.name} and the repository, "
-                    "so it is deployed again."
-                )
-            if args.plan:
-                return 0
+            ok = not reconciliation.plan.actions and not unmanaged
+            return 0 if ok and in_place else 1
 
-        # A type the target has, but no longer the repository, still runs:
-        # its run tells about the items deleted in Git.
-        present = {item.item_type for item in items}
-        present |= {item_type for item_type, _ in list_workspace(target)}
+        for item in items:
+            found = (
+                ids.references(item.key, item.folder).missing
+                if ids is not None
+                else set()
+            )
+            if found:
+                names = ", ".join(map(label, sorted(found)))
+                print(f"{label(item.key)} refers to {names}, not there yet.")
+        verb = "deletes" if args.allow_deletions else "would delete"
+        for key in deleted:
+            print(f"{label(key)}: an orphan --allow-deletions {verb}.")
+        if args.plan:
+            return 0
+
+        sending = to_send(reconciliation)
         results: list[Any] = []
-        for item_type in [t for t in managed if t in present]:
-            print(f"-- {item_type}...")
-            done = run_type(
-                item_type,
-                operation,
-                target,
-                staging,
-                arguments,
-                ids,
-                items,
-            )
-            if done is None:
-                return 1
-            results += done
+        for item_type in managed:
+            if item_type in sending:
+                print(f"-- {item_type}...")
+                # An item that could not be compared goes with its whole type.
+                unchecked = any(
+                    t == item_type for t, _ in reconciliation.unchecked
+                )
+                operation: Operation = (
+                    pf.deploy_all_items if unchecked else pf.restore_items
+                )
+                arguments: dict[str, Any] = {"start_path": str(staging)}
+                if not unchecked:
+                    # Applied as it is, so each definition is read once.
+                    arguments["reconciliation"] = reconciliation
+                done = run_type(
+                    item_type,
+                    operation,
+                    target,
+                    staging,
+                    arguments,
+                    ids,
+                    items,
+                )
+                if done is None:
+                    return 1
+                results += done
+            # The value set is checked even when no library differs.
             if item_type == "VariableLibrary" and not value_set_in_place(
                 target, items, value_set, change=True
             ):
                 return 1
-        sent = {
-            (r.item_type, r.display_name) for r in results if r.action in SENT
-        }
-        again = [model for model in stale if model.key not in sent]
-        if again:
-            # A run of their own, without the state: Git did not change them.
-            root = subset(staging, again, staging.parent / "parameters")
-            redeployed = pf.deploy_all_items(
-                target,
-                str(root),
-                start_path=str(root),
-                item_types=["SemanticModel"],
-            )
-            if not report(redeployed, "SemanticModel, parameters"):
+            # The lakehouses may have shortcuts to the replicated tables.
+            if item_type == "MirroredDatabase" and not mirroring_in_place(
+                target, items, start=True
+            ):
                 return 1
-            results += redeployed.results
+        if args.allow_deletions and not delete_orphans(target, deleted):
+            return 1
         published = publish_data_agents(target, results)
         ready = prepare_models(target, items, results, refreshed=args.refresh)
         return 0 if ready and published else 1

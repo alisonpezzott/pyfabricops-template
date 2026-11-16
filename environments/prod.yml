@@ -1,0 +1,25 @@
+# Production: deployed by deploy.py when main changes.
+workspace: workspace-name-or-id-prod
+branch: main
+
+# The value set made active in every variable library after a deployment.
+# Every library must have one of this exact name; remove the key to keep
+# the default values, which are those of dev.
+valueSet: Production
+
+# The text parameters of each semantic model, by model and parameter name.
+# Quote every value: YAML reads 5432 as a number and yes as true.
+# parameters:
+#   Sales:
+#     Server: "<server>.database.windows.net"
+#     Database: "<database>"
+
+# The connection of prod in place of each connection of dev, by name or
+# ID, such as the source of a mirrored database.
+# connections:
+#   sql-erp-dev: sql-erp-prod
+
+# The orphans --allow-deletions leaves in the workspace, as regular
+# expressions matched against the whole display name.
+# keep:
+#   - "Sandbox .*"

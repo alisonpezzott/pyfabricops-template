@@ -1,77 +1,96 @@
-# Deploys fabric-workspace/ to DEV when develop changes and to PRD when main
-# changes, to the workspace and with the parameters of environments/DEV.json
-# or PRD.json, then binds and refreshes the semantic models (see deploy.py).
-# The repository is the source of both workspaces, each on a Fabric capacity
-# or not: no workspace is connected to Git.
+# Deploys fabric-workspace/ when a branch of an environment changes: the
+# branch key of each file of environments/ says which branch deploys to it,
+# such as main to prod. The pipeline names no environment of its own: a
+# first job asks scripts/environments.py which environment the branch
+# deploys to, and the deployment runs in the GitHub environment of that
+# name, then binds and refreshes the semantic models (see deploy.py). A push
+# to a branch of no environment runs the first job only, and deploys
+# nothing. The environment connected to Git, dev by default, is updated
+# from Git instead, as Update in Source control does; the service principal
+# needs Git credentials of its own on it (see the README).
 #
 # Before the first run:
 # - A repository made from this template (Use this template on GitHub).
-#   In the template repository itself, the job is skipped.
-# - Two environments (Settings > Environments), "dev" and "prd", each with
+#   In the template repository itself, nothing runs.
+# - One GitHub environment (Settings > Environments) per file of
+#   environments/, of the same name, such as "dev" and "prod", each with
 #   the secrets FAB_TENANT_ID, FAB_CLIENT_ID and FAB_CLIENT_SECRET, of a
-#   service principal that is a Contributor of the workspace. The workspace
-#   itself is in environments/DEV.json or PRD.json. Required reviewers on
-#   "prd" make a deployment to PRD wait for an approval; "dev" may limit its
-#   deployment branches to develop, and "prd" to main.
+#   service principal that is a Contributor of the workspace. Required
+#   reviewers on "prod" make a deployment to prod wait for an approval, and
+#   deployment branches on each may repeat its branch.
 # - A shareable cloud connection to the server and database of each
 #   environment, of which the service principal is a user: each semantic
 #   model is bound to it.
-# - Nothing for the deployment state: it lives on the pyfabricops/state
-#   branch of this repository, which the first run creates, one state per
-#   environment. The job pushes to it with its own token, so it needs
-#   contents: write, and its commits say [skip ci]. Never merge that branch.
+#
+# Nothing records the deployment: each run compares the repository with the
+# workspace and sends what differs. To delete the items of the workspace
+# that the repository no longer has, add --allow-deletions to the Deploy
+# step (see deploy.py for what it never deletes).
 
 name: Deploy workspace
 
 on:
+  # Any branch: environments/ says which ones deploy.
   push:
-    branches:
-      - develop
-      - main
     paths:
       - fabric-workspace/**
       - environments/**
       - scripts/deploy.py
+      - scripts/environments.py
   workflow_dispatch:
 
-# One deployment at a time per environment: a second run would find the
-# deployment state locked, and fail.
-concurrency:
-  group: deploy-${{ github.ref_name }}
-  cancel-in-progress: false
-
 jobs:
-  deploy:
-    # Any other branch run by hand deploys nowhere, and the template
-    # repository itself deploys nothing.
-    if: >
-      github.repository != 'alisonpezzott/pyfabricops-template'
-      && (github.ref_name == 'develop' || github.ref_name == 'main')
+  environment:
+    # The template repository itself deploys nothing.
+    if: github.repository != 'alisonpezzott/pyfabricops-template'
     runs-on: ubuntu-latest
-    environment: ${{ github.ref_name == 'main' && 'prd' || 'dev' }}
     permissions:
-      # The deployment state is pushed to the pyfabricops/state branch.
-      contents: write
-    env:
-      ENVIRONMENT: ${{ github.ref_name == 'main' && 'PRD' || 'DEV' }}
+      contents: read
+    outputs:
+      name: ${{ steps.branch.outputs.name }}
     steps:
       - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
         with:
-          # The whole history: the run compares commits.
-          fetch-depth: 0
+          python-version: "3.13"
+
+      - name: Install PyYAML
+        run: pip install "pyyaml>=6,<7"
+
+      - name: Environment of the branch
+        id: branch
+        run: |
+          name=$(python scripts/environments.py --branch "$GITHUB_REF_NAME")
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "Branch $GITHUB_REF_NAME deploys to: ${name:-nothing}"
+
+  deploy:
+    needs: environment
+    if: needs.environment.outputs.name != ''
+    runs-on: ubuntu-latest
+    environment: ${{ needs.environment.outputs.name }}
+    # One deployment at a time per environment: a second run waits for the
+    # first, as the script itself takes no lock.
+    concurrency:
+      group: deploy-${{ needs.environment.outputs.name }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      ENVIRONMENT: ${{ needs.environment.outputs.name }}
+    steps:
+      - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
       - name: Install pyfabricops
-        run: pip install "pyfabricops>=0.11.0,<0.12.0"
+        run: pip install "pyfabricops>=0.12.0,<0.13.0" "pyyaml>=6,<7"
 
       - name: Deploy
-        run: >
-          python scripts/deploy.py
-          --environment "$ENVIRONMENT"
-          --state-branch pyfabricops/state
+        run: python scripts/deploy.py --environment "$ENVIRONMENT"
         env:
           FAB_TENANT_ID: ${{ secrets.FAB_TENANT_ID }}
           FAB_CLIENT_ID: ${{ secrets.FAB_CLIENT_ID }}
