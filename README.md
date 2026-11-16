@@ -4,41 +4,44 @@ A template repository: the script and the pipelines that deploy the items of
 a Fabric workspace, with [pyfabricops](https://github.com/alisonpezzott/pyfabricops),
 to one workspace per environment. Each environment is a YAML file that
 names its workspace and the branch that deploys to it: by default, `dev`
-from `develop` and `prod` from `main`. Make a repository from it, fill in the environment files,
-and put the items in `fabric-workspace/`.
+from `develop` and `prod` from `main`. Make a repository from it, fill in
+the environment files, and put the items in `fabric-workspace/`.
 
 The repository can be written in two ways, and the script tells them apart
 by the environment files:
 
 - **dev connected to Git** (the default of this template). Fabric Git
-  integration syncs the dev workspace with `fabric-workspace/`. The items it
-  writes hold the IDs of dev, so the script never deploys to dev and, for
-  prod, maps each dev ID to the ID of the same item in prod before sending it.
-  Every item type pyfabricops deploys can go this way.
+  integration syncs the dev workspace with `fabric-workspace/`. A run of
+  `develop` only updates dev from Git; no item is deployed to it through
+  the API. The items hold the IDs of dev, so for prod the script maps each
+  dev ID to the ID of the same item in prod before sending it. Every item
+  type pyfabricops deploys can go this way.
 - **No workspace connected to Git.** Power BI Desktop saves a Power BI
   Project, which holds no workspace IDs, and the repository is the source of
   every environment, dev included. Only variable libraries, semantic models
   and reports go this way.
 
 Either way, a workspace may be on a Fabric capacity or a Pro workspace,
-without one, and the environments may mix them.
+without one, and the environments may mix them. Nothing records what a run
+deployed: each run compares the repository with the workspace and sends
+what differs.
 
 ```text
 .
 ├── fabric-workspace/                 the items: Git folder of dev, or a Power BI Project
 ├── environments/dev.yml              dev: its workspace and branch, connected to Git
-├── environments/prod.yml             prod: its workspace, branch and value set
-├── scripts/deploy.py                 deploys, plans, reconciles
+├── environments/prod.yml             prod: its workspace, branch, value set and connections
+├── scripts/deploy.py                 deploys, plans, reconciles; updates dev from Git
 ├── scripts/environments.py           reads environments/, tells the environment of a branch
-├── azure-pipelines/deploy.yml        Azure DevOps: deploy when a branch of an environment changes
-├── .github/workflows/deploy.yml      GitHub Actions: deploy when a branch of an environment changes
+├── azure-pipelines/deploy.yml        Azure DevOps: runs when a branch of an environment changes
+├── .github/workflows/deploy.yml      GitHub Actions: runs when a branch of an environment changes
 ├── ruff.toml                         the Ruff settings of the scripts
 └── .env.example                      the credentials, for local runs
 ```
 
 | Environment | File | Branch | Who writes the workspace |
 | :--- | :--- | :--- | :--- |
-| `dev` | `environments/dev.yml` | `develop` | Fabric Git integration |
+| `dev` | `environments/dev.yml` | `develop` | Fabric Git integration, updated from Git by the pipeline |
 | `prod` | `environments/prod.yml` | `main` | `scripts/deploy.py` |
 
 ## Set up a new repository
@@ -64,7 +67,7 @@ without one, and the environments may mix them.
    [The environment connected to Git](#the-environment-connected-to-git)).
 6. **Prepare the credentials and connections** listed in
    [Before you start](#before-you-start).
-7. **Create the pipelines** of [Deploy from CI](#deploy-from-ci).
+7. **Create the pipeline** of [Deploy from CI](#deploy-from-ci).
 8. **Check the first deployment** before running it:
    `python scripts/deploy.py --environment prod --plan`.
 
@@ -77,19 +80,8 @@ items. Fabric Git integration ignores it, and so does the script.
 | :--- | :--- |
 | Every item type pyfabricops deploys, such as lakehouses, warehouses, mirrored databases, eventhouses and their KQL databases, notebooks, pipelines, Direct Lake models, variable libraries, semantic models, reports, eventstreams, ontologies and data agents | Variable libraries, import or DirectQuery semantic models, and reports |
 
-A **mirrored database** is deployed before the lakehouses, whose
-shortcuts may point to its tables, with the connection to its source that
-`connections` in the file of the environment gives in place of the one of
-dev (see [The environments](#the-environments)). Without it, the mirrored
-database of prod would replicate the source of dev, and the run says so.
-Its replication is not part of its definition: each run starts it where it
-does not run and waits for it, and `--reconcile` checks it. One thing no
-API does: the source must let the managed identity of the mirrored database
-in, such as with a database user for it in Azure SQL. The first deployment
-to an environment stops there; grant the access, and run it again.
-
 An item of a type pyfabricops does not deploy, such as a type newer than
-the pyfabricops of the pipelines, is not deployed: make it by hand in each
+the pyfabricops of the pipeline, is not deployed: make it by hand in each
 workspace, with the same name. The run sends nothing of it, but what refers
 to it goes pointed at the one of the target. `--reconcile` does not count
 it as unmanaged, and no run deletes it.
@@ -104,6 +96,34 @@ The script stops before it deploys anything when the repository has:
 - for a Pro workspace, any item but a semantic model or a report;
 - a model saved as `model.bim`: the script reads the parameters of TMDL
   only.
+
+### Mirrored databases
+
+A mirrored database is deployed before the lakehouses, whose shortcuts may
+point to its tables, and each environment needs a source of its own: a
+source database feeds one mirrored database only, so prod mirrors another
+database, on another server or under another name. `connections` in the
+file of the environment gives the connection to it in place of the one of
+dev (see [The environments](#the-environments)); the run says when a
+mirrored database is left on the connection of dev, or when the connection
+of the environment reaches the same server and database as the one of dev.
+
+Its replication is not part of its definition: each run checks that it
+runs, starts it when it does not, and waits for it before deploying the
+lakehouses. `--reconcile` checks that it runs. What no Fabric API does,
+before the first deployment to an environment, at its source:
+
+- the identity of its connection, such as the service principal, needs a
+  user in the source database with `SELECT`, `ALTER ANY EXTERNAL MIRROR`,
+  `VIEW DATABASE PERFORMANCE STATE` and `VIEW DATABASE SECURITY STATE`;
+- for Azure SQL Database, the system-assigned managed identity of the
+  logical server must be on.
+
+Check the Fabric documentation on mirroring for the source in use: its
+prerequisites change. When the replication cannot start, the run fails and
+points at the error shown on the mirrored database in Fabric, such as a
+rejected secret of its connection, a source already mirrored elsewhere or a
+missing permission.
 
 ## How you work
 
@@ -127,9 +147,9 @@ that a change to prod is a change to `prod.yml` alone, and a `CODEOWNERS`
 entry on it can ask the right people to review it. The file name is the
 environment name: the one passed to `--environment`, and the name of the
 environment in GitHub or Azure DevOps. Use lowercase letters, digits and
-`-`.
+`-`. The files are YAML, so they hold comments too.
 
-The pipelines name no environment: they pass their branch, and the file
+The pipeline names no environment: it passes its branch, and the file
 whose `branch` matches says where it deploys.
 
 The environment connected to Git gives its workspace and its branch, and
@@ -143,7 +163,7 @@ gitConnected: true
 
 Every other environment gives its workspace, its branch and, optionally,
 the value set of its variable libraries, the parameters of its semantic
-models and the orphans to keep:
+models, the connections that replace those of dev and the orphans to keep:
 
 ```yaml
 workspace: workspace-name-or-id-prod
@@ -152,10 +172,10 @@ valueSet: Production
 parameters:
   <model name>:
     <parameter name>: "<value in prod>"
-keep:
-  - "Sandbox .*"
 connections:
   <connection of dev>: <connection of prod>
+keep:
+  - "Sandbox .*"
 ```
 
 | Key | What it does |
@@ -164,8 +184,8 @@ connections:
 | `branch` | The branch that deploys to it, by name or as a glob such as `release/*`. No branch may deploy to two environments. Without it, the environment is deployed only with `--environment`. |
 | `gitConnected` | `true` for the environment Fabric Git integration writes. No item is deployed to it through the API: a run of its branch updates it from Git, and the runs of the other environments read its items to translate their IDs. |
 | `valueSet` | The value set made active in every variable library after the deployment. Every library must have it, with this exact name, and the run stops when the repository has no variable library. Without it, the libraries keep their default values, which are those of dev. |
-| `parameters` | The text parameters of each semantic model, by model and parameter name. Quote every value: YAML reads `5432` as a number and `yes` as true, and the run stops on a value that is not text. A parameter left out keeps the value of the repository, the one of dev, and the run says which; so does a parameter that is not text, such as a date, which the file cannot set. A model or parameter the repository does not have stops the run, so a misspelled name never goes unnoticed. |
-| `connections` | The connection of this environment in place of each connection of dev, both by name or ID: every ID of the one of dev in the items, such as the source of a mirrored database or the connection of a copy activity, becomes the ID of the other. A mirrored database also gets the database its new connection names. The service principal must be a user of both, or the run stops. |
+| `parameters` | The text parameters of each semantic model, by model and parameter name. Quote every value, and any name YAML could read otherwise: YAML reads `5432` as a number and `yes` or `on` as true, and the run stops on a name or a value that is not text. A parameter left out keeps the value of the repository, the one of dev, and the run says which; so does a parameter that is not text, such as a date, which the file cannot set. A model or parameter the repository does not have stops the run, so a misspelled name never goes unnoticed. |
+| `connections` | The connection of this environment in place of each connection of dev, both by name or by ID; the ID of the one of dev is in the items, such as `mirroring.json` of a mirrored database. Every ID of the one of dev in the items becomes the ID of the other, as the source of a mirrored database, the connection of a shortcut or of a copy activity. A mirrored database also gets the database its new connection names. The service principal must be a user of both: a name it cannot see stops the run, and an ID it cannot see leaves the database of a mirrored database as it is, which the run says. Prefer names. |
 | `keep` | The names of the items `--allow-deletions` leaves in the workspace although the repository does not have them, as regular expressions matched against the whole display name, such as `"Sandbox .*"`. Escape `.`, `(` and the other special characters of a literal name. |
 
 Whether the workspace is on a capacity is not in the file: the script reads
@@ -192,12 +212,18 @@ deploys no item through the item API:
   would discard them: the run fails and names them, to be committed or
   undone in **Source control**;
 - otherwise it is updated to the commit of `develop`, and the run waits.
+  When the commits since touch no item, such as a change to the scripts,
+  the update only moves the workspace to the commit.
 
 `--plan` tells what an update would bring; `--reconcile` fails when the
 workspace is not on the commit of its branch, or has changes not committed.
 
+### Git credentials of the service principal
+
 The service principal calls the Git API as itself, so it needs Git
-credentials of its own on the workspace, once:
+credentials of its own on the dev workspace. Being a user of a source
+control connection is not enough: its credentials must point at it. Set it
+up once:
 
 1. Create a source control connection to the repository in **Manage
    connections and gateways**: for GitHub, of type GitHub with a
@@ -220,10 +246,21 @@ credentials of its own on the workspace, once:
    )
    ```
 
-Until then, a run of `develop` fails with the error of the Git status and a
-pointer here. The connection types that hold Git credentials for a service
-principal change with Fabric: check the Fabric documentation on Git
-integration with service principals before the first setup.
+Until then, a run of `develop` fails with `GitCredentialsNotConfigured` and
+a pointer here. The setting belongs to one service principal on one
+workspace, and Fabric keeps it. Set it up again when:
+
+- a repository made from this template has a dev workspace of its own;
+- the pipeline uses another service principal;
+- the workspace is disconnected from Git and connected again;
+- the source control connection is deleted.
+
+When the token of the connection expires, the runs of `develop` fail
+reading the Git status again: renew the token in the connection, and leave
+the credentials of the service principal as they are. The connection types
+that hold Git credentials for a service principal change with Fabric:
+check the Fabric documentation on Git integration with service principals
+before the first setup.
 
 ## What a deployment does
 
@@ -245,13 +282,16 @@ For the environment of the branch, `scripts/deploy.py`:
    ID of the same item, by type and name, in the target workspace. Fabric
    lists both workspaces at every run. This covers, for example, the
    default lakehouse of a notebook, the OneLake source of a Direct Lake
-   model and the items a pipeline runs. A shortcut to an item of the same
-   workspace gets the logical ID of that item in the target. The query URI
-   of each eventhouse and the SQL endpoint of dev become those of the
-   target as well.
+   model and the items a pipeline runs. A shortcut to a lakehouse of the
+   same workspace gets the logical ID of that lakehouse in the target; a
+   shortcut to any other item, such as the tables of a mirrored database,
+   gets the ID of the item and of the target workspace, as Fabric resolves
+   no other logical ID in a shortcut. The query URI of each eventhouse and
+   the SQL endpoint of dev become those of the target as well.
 6. Reconciles the staging copy with the workspace: reads the definition of
-   every item found on both sides and compares them. The workspace is the
-   deployment state, so nothing else records what a run sent.
+   every item found on both sides, once, and compares them, leaving out
+   what Fabric rewrites by itself. The workspace is the deployment state,
+   so nothing else records what a run sent.
 7. Sends only the items the workspace lacks or that differ from the
    repository, whether Git changed them or someone changed them in the
    workspace; a model whose parameters there differ is one of them. An
@@ -259,16 +299,17 @@ For the environment of the branch, `scripts/deploy.py`:
    every item of its type is sent. A run that failed leaves nothing to
    resume: the next one sends what still differs.
 8. Sends them one item type at a time, in the dependency order of
-   pyfabricops, with pipelines last. An item then refers by ID only to
-   items already in the target, and a report bound to its model by path
-   goes bound to the ID of the model there. Within a type, the items the
-   others refer to go first, such as a lakehouse a shortcut points to. The
-   run stops before it sends an item that would still refer to dev.
+   pyfabricops, with pipelines last, without reading their definitions
+   again. An item then refers by ID only to items already in the target,
+   and a report bound to its model by path goes bound to the ID of the
+   model there. Within a type, the items the others refer to go first,
+   such as a lakehouse a shortcut points to. The run stops before it sends
+   an item that would still refer to dev.
 9. Makes the value set of the environment active in each variable library,
    and reads it back. The active value set is not part of the definition, so
    no deployment sets it otherwise. Likewise, once the mirrored databases
-   are deployed, starts the replication of each one that does not run, and
-   waits for it, before the lakehouses.
+   are deployed, checks that each one replicates, starts it when it does
+   not, and waits for it, before the lakehouses.
 10. With `--allow-deletions`, deletes the orphans: the items of the types
     the run manages that the workspace holds and the repository does not.
     See [Deletions](#deletions).
@@ -304,24 +345,36 @@ Some orphans are never deleted, with or without the option:
   model or a report.
 
 A semantic model or a report deleted this way is gone for good; Fabric keeps
-other types in the workspace recycle bin. The pipelines do not pass
+other types in the workspace recycle bin. The pipeline does not pass
 `--allow-deletions`: add it once the repository holds every item the
 workspace should have.
 
 ## Before you start
 
-- **pyfabricops 0.12.0 or later, and PyYAML 6.**
+- **pyfabricops 0.12.0 or later, and PyYAML 6.** The pipeline installs
+  `pyfabricops>=0.12.0,<0.13.0`: before 1.0, a new minor version may change
+  behavior, so move to one on purpose.
 - **A service principal**, allowed to call the Fabric and Power BI APIs by
-  the tenant settings, Contributor of each workspace it deploys to, and able
-  to read the items of dev when dev is connected to Git.
+  the tenant settings, Contributor of each workspace it deploys to, able to
+  read the items of dev when dev is connected to Git, and with Git
+  credentials of its own on dev (see
+  [Git credentials of the service principal](#git-credentials-of-the-service-principal)).
 - **A shareable cloud connection per environment** to each SQL server and
   database an import model reads, with the service principal as a user of
   it. The script finds it by server and database, so no connection name or
-  ID is configured. The service principal must also be a user of the
-  connection of each OneLake shortcut to an external source, or the
-  lakehouse that holds it fails to deploy.
+  ID is configured.
+- **The connections the items use, valid in each environment**, with the
+  service principal as a user of each: those of the shortcuts of a
+  lakehouse to an external source, such as ADLS Gen2, and those of
+  `connections`. A connection that signs in with a secret, such as that of
+  a service principal, must hold one that is still valid: a lakehouse whose
+  shortcut connection holds an expired or replaced secret fails to deploy
+  with `AADSTS7000215`.
+- **For each mirrored database**, a source of its own per environment, and
+  the access at that source of [Mirrored databases](#mirrored-databases).
 - **A `.env` file**, copied from `.env.example`, with the credentials of the
-  service principal. Keep it out of Git.
+  service principal. Keep it out of Git, and never paste its values
+  anywhere else.
 
 ## Run it
 
@@ -333,24 +386,24 @@ python scripts/deploy.py --environment prod --plan
 
 | Option | What it does |
 | :--- | :--- |
-| *(none)* | Deploys, activates the value set, binds and refreshes. |
-| `--branch` | Instead of `--environment`, deploys to the environment whose `branch` matches, such as `--branch main`. |
-| `--plan` | Prints what a run would send and delete, and changes nothing. |
-| `--reconcile` | Reports how the workspace stands against the repository, including model parameters and active value sets, and changes nothing. Exits with 1 when anything differs. |
-| `--workspace` | Deploys to another workspace than the one of the file. |
+| *(none)* | Deploys, activates the value set, starts mirroring, binds and refreshes. For the environment connected to Git, updates it from Git. |
+| `--branch` | Instead of `--environment`, runs for the environment whose `branch` matches, such as `--branch main`. |
+| `--plan` | Prints what a run would send, delete or update from Git, and changes nothing. |
+| `--reconcile` | Reports how the workspace stands against the repository, including the active value sets and the mirroring of each mirrored database, or the Git status for the environment connected to Git, and changes nothing. Exits with 1 when anything differs, an orphan included. |
+| `--workspace` | Runs for another workspace than the one of the file. |
 | `--source` | Reads the items from another folder than `fabric-workspace`. |
 | `--no-refresh` | Binds the models but does not refresh them. |
 | `--allow-deletions` | Deletes the orphans of the workspace, but those that hold data and those of `keep`. Without it, they are only reported. |
-| `--log-level` | How much pyfabricops logs as the run goes: `INFO` by default, `DEBUG` for each API call, payloads included. |
+| `--log-level` | How much pyfabricops logs as the run goes: `INFO` by default, which names each definition it reads; `DEBUG` for each API call, payloads included. |
 
 ## Deploy from CI
 
-The pipelines run the same script, and name no environment of their own:
-a first job runs `scripts/environments.py --branch <branch>`, which prints
+The pipeline runs the same script, and names no environment of its own: a
+first job runs `scripts/environments.py --branch <branch>`, which prints
 the environment whose `branch` matches, and the deployment runs in the
-environment of that name. By default, `develop` updates dev from Git,
-as it is connected to Git; `main` deploys to prod; any other branch
-deploys to nothing, and its run succeeds.
+environment of that name. By default, `develop` updates dev from Git, as
+it is connected to Git; `main` deploys to prod; any other branch deploys
+to nothing, and its run succeeds.
 
 | | Azure DevOps | GitHub Actions |
 | :--- | :--- | :--- |
@@ -364,11 +417,14 @@ deploys to nothing, and its run succeeds.
 
 In Azure DevOps, create the pipeline from **Existing Azure Pipelines YAML
 file**, pointing at `azure-pipelines/deploy.yml`. Allow it to use the
-variable group and the environments, or **Permit** them on the first run; until then, a run fails with "Variable group was not
-found or is not authorized for use". In GitHub Actions, create the
-environments, with their secrets and reviewers, before the first push: a job
-creates an environment it names that does not exist, with no protection
-rule.
+variable group and the environments, or **Permit** them on the first run;
+until then, a run fails with "Variable group was not found or is not
+authorized for use". In GitHub Actions, create the environments, with their
+secrets and reviewers, before the first push: a job creates an environment
+it names that does not exist, with no protection rule.
+
+There is no scheduled drift report: every deployment reconciles and sends
+back what differs, and `--reconcile` checks a workspace by hand at any time.
 
 ## Good to know
 
@@ -388,10 +444,17 @@ rule.
 - **Pointing an environment at another workspace is safe.** Nothing is
   recorded about the old one, so the first run sends every item to the new
   one.
-- **Each run reads every definition of the workspace.** That is the price
-  of keeping no state: a workspace of dozens of items takes a little longer
-  to compare, and nothing has to be stored, pushed or locked.
-- **An item the service rewrites is sent on every run.** If a definition
-  comes back from Fabric different from what Git holds, the item counts as
-  changed each time, and an import model is refreshed each time. Run
-  `--reconcile` right after a deployment: it should report nothing.
+- **Each run reads every definition of the workspace, once.** That is the
+  price of keeping no state: a workspace of dozens of items takes a minute
+  or two to compare, and nothing has to be stored, pushed or locked. The
+  log names each definition as it is read.
+- **A run with nothing to send sends nothing.** Right after a deployment,
+  `--reconcile` should report every item in sync. pyfabricops leaves out of
+  the comparison what Fabric rewrites by itself, such as the logical ID in
+  `.platform`, the `artifactType` of a shortcut or what publishing a data
+  agent writes. An item that still comes back different on every run would
+  be sent, and an import model refreshed, every time: report it.
+- **Dataflow Gen2 creates staging items**, a lakehouse and a warehouse
+  named `StagingLakehouseForDataflows_…` and `StagingWarehouseForDataflows_…`.
+  They are orphans that hold data, so no run deletes them, but
+  `--reconcile` lists them and exits with 1.

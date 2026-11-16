@@ -37,9 +37,12 @@ A mirrored database is deployed with the connection to its source that
 of dev, as is any other item that names that connection by ID, such as a
 copy activity. Its replication does not belong to its definition: each run
 starts it where it does not run, and waits for it to, before the
-lakehouses whose shortcuts point to its tables. The first run fails there
-until its managed identity is let into the source, which no Fabric API
-does; run it again after. --reconcile checks that it runs.
+lakehouses whose shortcuts point to its tables. A source database feeds
+one mirrored database only, so each environment mirrors a source of its
+own, and the run says when two environments reach the same one. The first
+run fails there until the source lets the identity of the connection in,
+which no Fabric API does; run it again after. --reconcile checks that it
+runs.
 
 An item of a type pyfabricops does not deploy, such as a type newer than
 the pyfabricops of the pipelines, is made in each workspace by hand, with
@@ -935,8 +938,9 @@ def mirroring_in_place(
     Whether each mirrored database replicates.
 
     With ``start``, the replication is started where it does not run, and
-    waited for. It fails while the managed identity of the database has no
-    access to the source, which is granted at the source.
+    waited for. It fails while the source refuses the replication, such as
+    when the identity of its connection has no access there, which is
+    granted at the source.
     """
     ok = True
     for mirror in mirrors(items):
@@ -958,8 +962,9 @@ def mirroring_in_place(
             TimeoutError,
         ) as error:
             print(
-                f"{label(mirror.key)}: {error} Let its managed identity into "
-                "the source, then run again."
+                f"{label(mirror.key)}: {error} Fix what the error on the "
+                "mirrored database in Fabric tells, at its connection or its "
+                "source, then run again."
             )
             ok = False
             continue
